@@ -1,0 +1,398 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+#app{background:#12122a;min-height:480px;border-radius:var(--border-radius-lg);overflow:hidden;font-family:var(--font-sans);}
+.topbar{background:#1a1a2e;padding:13px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:0.5px solid #2a2a4a;}
+.app-title{color:#AFA9EC;font-size:13px;font-weight:500;}
+.rec-dot{width:7px;height:7px;background:#E24B4A;border-radius:50%;display:inline-block;margin-right:6px;animation:blink 1s infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.ltag{display:flex;align-items:center;font-size:11px;color:#F09595;}
+.trow{background:#1a1a2e;padding:13px 18px;display:flex;align-items:center;gap:14px;border-bottom:0.5px solid #2a2a4a;}
+.nbadge{background:#26215C;border-radius:10px;padding:8px 13px;text-align:center;min-width:56px;}
+.nn{font-size:26px;font-weight:500;color:#CECBF6;line-height:1;}
+.no{font-size:11px;color:#7F77DD;}
+.pcol{flex:1;}
+.plbls{display:flex;justify-content:space-between;font-size:10px;color:#6b6b9a;margin-bottom:4px;}
+.rail{height:10px;background:#2a2a4a;border-radius:5px;position:relative;}
+.railctr{position:absolute;left:50%;top:0;width:1px;height:100%;background:#3a3a6a;}
+.mkr{position:absolute;top:-3px;width:16px;height:16px;border-radius:50%;background:#1e1e3e;border:2.5px solid #3a3a6a;transform:translateX(-50%);transition:left 0.1s,border-color 0.15s;}
+.centd{text-align:center;font-size:11px;color:#6b6b9a;margin-top:4px;}
+.abadge{background:#0a1a12;border-radius:8px;padding:8px 11px;text-align:center;}
+.av{font-size:20px;font-weight:500;color:#1D9E75;}
+.al{font-size:9px;color:#5DCAA5;}
+.hrow{padding:6px 18px 10px;}
+.hlbl{font-size:10px;color:#6b6b9a;margin-bottom:4px;text-align:center;}
+.hbg{height:4px;background:#2a2a4a;border-radius:2px;}
+.hfill{height:4px;background:#534AB7;border-radius:2px;width:0%;transition:width 0.05s;}
+.nsec{padding:13px 18px 0;}
+.nlbl{font-size:10px;color:#6b6b9a;letter-spacing:0.5px;margin-bottom:8px;}
+.ngrid{display:flex;gap:6px;flex-wrap:wrap;}
+.nbox{flex:1;min-width:54px;border-radius:8px;padding:9px 4px;text-align:center;border:1.5px solid #2a2a4a;background:#1a1a2e;transition:all 0.2s;}
+.nbox .bn{font-size:14px;font-weight:500;color:#6b6b9a;}
+.nbox .ba{font-size:9px;color:#6b6b9a;margin-top:2px;}
+.nbox.cur{border-color:#534AB7;background:#1e1a3a;}.nbox.cur .bn{color:#CECBF6;}
+.nbox.good{border-color:#1D9E75;background:#081a10;}.nbox.good .bn{color:#5DCAA5;}.nbox.good .ba{color:#1D9E75;}
+.nbox.bad{border-color:#A32D2D;background:#1a0808;}.nbox.bad .bn{color:#F09595;}.nbox.bad .ba{color:#E24B4A;}
+.hbar{display:flex;gap:4px;padding:10px 18px 8px;}
+.hcell{height:5px;border-radius:3px;flex:1;background:#2a2a4a;transition:background 0.3s;}
+.dbg{font-size:10px;color:#4a4a7a;text-align:center;padding:4px 18px;font-family:monospace;}
+.logrow{padding:4px 18px 12px;display:flex;gap:8px;align-items:center;justify-content:center;}
+.dlbtn{background:#1a1a2e;border:1px solid #534AB7;border-radius:6px;color:#AFA9EC;font-size:11px;padding:5px 12px;cursor:pointer;}
+.dlbtn:hover{background:#26215C;}
+.logcount{font-size:10px;color:#6b6b9a;}
+.startscr{display:flex;flex-direction:column;align-items:center;padding:22px 18px;gap:13px;}
+.sbtn{background:#534AB7;border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:500;padding:13px;cursor:pointer;width:100%;}
+.sbtn:hover{background:#7F77DD;}
+.errmsg{color:#F09595;font-size:12px;text-align:center;}
+.sumscr{padding:20px;display:flex;flex-direction:column;gap:13px;}
+.stitle{font-size:16px;font-weight:500;color:#CECBF6;text-align:center;}
+.sscore{font-size:48px;font-weight:500;color:#1D9E75;text-align:center;}
+.ssub{font-size:12px;color:#6b6b9a;text-align:center;margin-top:-8px;}
+.snotes{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;}
+.rbtn{background:#26215C;border:none;border-radius:8px;color:#CECBF6;font-size:13px;padding:10px 24px;cursor:pointer;width:100%;}
+.rbtn:hover{background:#3C3489;}
+</style>
+
+<h2 class="sr-only">Violin tuner v4 with median filtering and Hz data download</h2>
+
+<div id="app">
+  <div class="topbar">
+    <span class="app-title">Vivaldi — Spring, Mvt. I</span>
+    <div id="ltag" class="ltag" style="display:none;"><span class="rec-dot"></span>Listening</div>
+  </div>
+
+  <div id="startscr" class="startscr">
+    <div style="text-align:center;">
+      <div style="font-size:13px;color:#AFA9EC;margin-bottom:6px;">Violin tuner — v4 (stabilised)</div>
+      <div style="font-size:11px;color:#6b6b9a;line-height:1.8;">Median filtering stops the spasming.<br>Hz log records every reading — download it<br>and send it back so I can see what's happening.</div>
+    </div>
+    <div style="background:#1a1a2e;border-radius:10px;padding:12px 16px;width:100%;">
+      <div style="font-size:10px;color:#6b6b9a;margin-bottom:8px;">Melody — Vivaldi Spring phrase 1</div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;">
+        <span style="font-size:12px;color:#7F77DD;background:#26215C;border-radius:6px;padding:3px 7px;">E5</span>
+        <span style="font-size:12px;color:#7F77DD;background:#26215C;border-radius:6px;padding:3px 7px;">F#5</span>
+        <span style="font-size:12px;color:#7F77DD;background:#26215C;border-radius:6px;padding:3px 7px;">G#5</span>
+        <span style="font-size:12px;color:#7F77DD;background:#26215C;border-radius:6px;padding:3px 7px;">A5</span>
+        <span style="font-size:12px;color:#7F77DD;background:#26215C;border-radius:6px;padding:3px 7px;">B5</span>
+        <span style="font-size:12px;color:#7F77DD;background:#26215C;border-radius:6px;padding:3px 7px;">A5</span>
+        <span style="font-size:12px;color:#7F77DD;background:#26215C;border-radius:6px;padding:3px 7px;">G#5</span>
+        <span style="font-size:12px;color:#7F77DD;background:#26215C;border-radius:6px;padding:3px 7px;">F#5</span>
+      </div>
+    </div>
+    <button class="sbtn" onclick="startTuner()">Allow microphone &amp; start</button>
+    <div id="errmsg" class="errmsg"></div>
+  </div>
+
+  <div id="tunscr" style="display:none;">
+    <div class="trow">
+      <div class="nbadge"><div class="nn" id="curnote">—</div><div class="no" id="curoct"></div></div>
+      <div class="pcol">
+        <div class="plbls"><span>flat</span><span>in tune</span><span>sharp</span></div>
+        <div class="rail"><div class="railctr"></div><div class="mkr" id="mkr" style="left:50%;"></div></div>
+        <div class="centd" id="centd">—</div>
+      </div>
+      <div class="abadge"><div class="av" id="accval">—%</div><div class="al">session</div></div>
+    </div>
+    <div class="hrow">
+      <div class="hlbl" id="hlbl">play E5...</div>
+      <div class="hbg"><div class="hfill" id="hfill"></div></div>
+    </div>
+    <div class="nsec">
+      <div class="nlbl">Melody</div>
+      <div class="ngrid" id="ngrid"></div>
+    </div>
+    <div class="hbar" id="hbar"></div>
+    <div class="dbg" id="dbg">waiting...</div>
+    <div class="logrow">
+      <button class="dlbtn" onclick="downloadLog()">Download Hz log</button>
+      <span class="logcount" id="logcount">0 readings logged</span>
+    </div>
+  </div>
+
+  <div id="sumscr" class="sumscr" style="display:none;">
+    <div class="stitle">Practice complete</div>
+    <div class="sscore" id="sscore">0%</div>
+    <div class="ssub" id="ssub"></div>
+    <div class="snotes" id="snotes"></div>
+    <div class="logrow" style="padding:0;">
+      <button class="dlbtn" onclick="downloadLog()">Download Hz log</button>
+      <span class="logcount" id="logcount2"></span>
+    </div>
+    <button class="rbtn" onclick="restart()">Play again</button>
+  </div>
+</div>
+
+<script>
+const MELODY=[
+  {name:'E',oct:5,midi:88},
+  {name:'F#',oct:5,midi:90},
+  {name:'G#',oct:5,midi:92},
+  {name:'A',oct:5,midi:93},
+  {name:'B',oct:5,midi:95},
+  {name:'A',oct:5,midi:93},
+  {name:'G#',oct:5,midi:92},
+  {name:'F#',oct:5,midi:90}
+];
+
+function midiToHz(m){return 440*Math.pow(2,(m-69)/12);}
+function hzToCents(hz,ref){return 1200*Math.log2(hz/ref);}
+
+function detectRaw(buf, sampleRate){
+  let rms=0;
+  for(let i=0;i<buf.length;i++) rms+=buf[i]*buf[i];
+  rms=Math.sqrt(rms/buf.length);
+  if(rms<0.003) return -1;
+
+  const SIZE=buf.length;
+  const corr=new Float32Array(SIZE);
+  for(let lag=0;lag<SIZE;lag++){
+    let s=0;
+    for(let i=0;i<SIZE-lag;i++) s+=buf[i]*buf[i+lag];
+    corr[lag]=s;
+  }
+
+  let d=1;
+  while(d<SIZE-1&&corr[d]>corr[d+1]) d++;
+
+  const minLag=Math.floor(sampleRate/2000);
+  const maxLag=Math.floor(sampleRate/100);
+  let maxVal=-1,bestLag=-1;
+  for(let i=Math.max(d,minLag);i<Math.min(SIZE-1,maxLag);i++){
+    if(corr[i]>maxVal){maxVal=corr[i];bestLag=i;}
+  }
+  if(bestLag<1||corr[0]<0.0001||maxVal/corr[0]<0.35) return -1;
+
+  const y1=corr[bestLag-1],y2=corr[bestLag],y3=corr[bestLag+1];
+  const denom=2*(2*y2-y1-y3);
+  const refined=denom!==0?bestLag-(y3-y1)/denom:bestLag;
+  return sampleRate/refined;
+}
+
+function closestOctave(hz, targetHz){
+  let best=hz,bestDiff=Math.abs(hzToCents(hz,targetHz));
+  for(let o=-2;o<=2;o++){
+    const c=hz*Math.pow(2,o);
+    const d=Math.abs(hzToCents(c,targetHz));
+    if(d<bestDiff){bestDiff=d;best=c;}
+  }
+  return best;
+}
+
+function median(arr){
+  if(!arr.length) return -1;
+  const s=[...arr].sort((a,b)=>a-b);
+  const m=Math.floor(s.length/2);
+  return s.length%2?s[m]:(s[m-1]+s[m])/2;
+}
+
+let audioCtx,analyser,rawBuf,animId;
+let curIdx=0,results=[],holdStart=null,holdCentsList=[];
+const HOLD_MS=600,CENT_OK=35;
+const MEDIAN_WIN=9;
+const recentHz=[];
+let hzLog=[];
+let frameCount=0;
+
+function logHz(raw,corrected,targetNote,cents,rms){
+  hzLog.push({
+    t: Date.now(),
+    raw: raw<0?'none':Math.round(raw*10)/10,
+    corrected: corrected<0?'none':Math.round(corrected*10)/10,
+    target: targetNote,
+    cents: corrected<0?'none':Math.round(cents),
+    rms: Math.round(rms*10000)/10000
+  });
+  const lc=document.getElementById('logcount');
+  if(lc) lc.textContent=hzLog.length+' readings logged';
+}
+
+function downloadLog(){
+  if(!hzLog.length){alert('No data yet — play some notes first!');return;}
+  const t0=hzLog[0].t;
+  const lines=['time_ms,raw_hz,corrected_hz,target_note,cents_off,rms'];
+  hzLog.forEach(r=>{
+    lines.push((r.t-t0)+','+r.raw+','+r.corrected+','+r.target+','+r.cents+','+r.rms);
+  });
+  const blob=new Blob([lines.join('\n')],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download='violin_hz_log.csv';a.click();
+  URL.revokeObjectURL(url);
+}
+
+function buildUI(){
+  const g=document.getElementById('ngrid'),h=document.getElementById('hbar');
+  g.innerHTML='';h.innerHTML='';
+  MELODY.forEach((n,i)=>{
+    const d=document.createElement('div');
+    d.className='nbox'+(i===0?' cur':'');
+    d.id='nb'+i;
+    d.innerHTML=`<div class="bn">${n.name}<span style="font-size:10px;opacity:0.5;">${n.oct}</span></div><div class="ba" id="ba${i}">—</div>`;
+    g.appendChild(d);
+    const c=document.createElement('div');
+    c.className='hcell';c.id='hc'+i;
+    h.appendChild(c);
+  });
+}
+
+function updateUI(){
+  MELODY.forEach((_,i)=>{
+    const el=document.getElementById('nb'+i);
+    const r=results[i];
+    el.className='nbox'+(i===curIdx?' cur':r!=null?(r<=20?' good':' bad'):'');
+    const al=document.getElementById('ba'+i);
+    if(r!=null){
+      al.textContent=r<=20?'in tune':Math.round(r)+'¢ off';
+      document.getElementById('hc'+i).style.background=r<=20?'#1D9E75':'#E24B4A';
+    }
+  });
+}
+
+function updateAcc(){
+  if(!results.length){document.getElementById('accval').textContent='—%';return;}
+  const pct=Math.round(results.filter(r=>r<=20).length/results.length*100);
+  const el=document.getElementById('accval');
+  el.textContent=pct+'%';
+  el.style.color=pct>=80?'#1D9E75':pct>=50?'#EF9F27':'#E24B4A';
+}
+
+function tick(){
+  analyser.getFloatTimeDomainData(rawBuf);
+
+  let rms=0;
+  for(let i=0;i<rawBuf.length;i++) rms+=rawBuf[i]*rawBuf[i];
+  rms=Math.sqrt(rms/rawBuf.length);
+
+  const raw=detectRaw(rawBuf,audioCtx.sampleRate);
+  const target=MELODY[curIdx];
+  const targetHz=midiToHz(target.midi);
+  const targetLabel=target.name+target.oct;
+
+  if(raw>0){
+    recentHz.push(raw);
+    if(recentHz.length>MEDIAN_WIN) recentHz.shift();
+  } else {
+    if(recentHz.length>0) recentHz.shift();
+  }
+
+  const med=recentHz.length>=3?median(recentHz):-1;
+  const corrected=med>0?closestOctave(med,targetHz):-1;
+  const cents=corrected>0?hzToCents(corrected,targetHz):0;
+  const absCents=Math.abs(cents);
+
+  frameCount++;
+  if(frameCount%3===0){
+    logHz(raw,corrected,targetLabel,cents,rms);
+  }
+
+  const mkr=document.getElementById('mkr');
+  const centd=document.getElementById('centd');
+  const hlbl=document.getElementById('hlbl');
+  const hfill=document.getElementById('hfill');
+  const dbg=document.getElementById('dbg');
+
+  if(corrected>0){
+    dbg.textContent='raw: '+(raw>0?Math.round(raw):'—')+'hz | median: '+Math.round(med)+'hz | corrected: '+Math.round(corrected)+'hz | rms: '+rms.toFixed(4);
+
+    const pct=Math.min(Math.max(50+cents/1.5,2),98);
+    mkr.style.left=pct+'%';
+    mkr.style.borderColor=absCents<=20?'#1D9E75':absCents<=40?'#EF9F27':'#E24B4A';
+    centd.textContent=(cents>=0?'+':'')+Math.round(cents)+'¢';
+    centd.style.color=absCents<=20?'#9FE1CB':absCents<=40?'#FAC775':'#F09595';
+
+    if(absCents<=CENT_OK){
+      if(!holdStart){holdStart=Date.now();holdCentsList=[];}
+      holdCentsList.push(absCents);
+      const elapsed=Date.now()-holdStart;
+      const prog=Math.min(elapsed/HOLD_MS*100,100);
+      hfill.style.width=prog+'%';
+      hlbl.textContent=prog<90?'hold steady...':'got it!';
+      if(elapsed>=HOLD_MS){
+        const avg=holdCentsList.reduce((a,b)=>a+b,0)/holdCentsList.length;
+        results.push(avg);
+        updateUI();updateAcc();
+        holdStart=null;holdCentsList=[];hfill.style.width='0%';
+        recentHz.length=0;
+        curIdx++;
+        if(curIdx>=MELODY.length){showSummary();return;}
+        const nt=MELODY[curIdx];
+        document.getElementById('curnote').textContent=nt.name;
+        document.getElementById('curoct').textContent=nt.oct;
+        hlbl.textContent='play '+nt.name+nt.oct+'...';
+        updateUI();
+      }
+    } else {
+      holdStart=null;holdCentsList=[];hfill.style.width='0%';
+      hlbl.textContent='find '+target.name+target.oct+'...';
+    }
+  } else {
+    mkr.style.left='50%';mkr.style.borderColor='#3a3a6a';
+    centd.textContent='—';
+    holdStart=null;holdCentsList=[];hfill.style.width='0%';
+    hlbl.textContent='play '+target.name+target.oct+'...';
+    dbg.textContent='no signal — rms: '+rms.toFixed(4)+(rms<0.003?' (too quiet)':'');
+  }
+
+  animId=requestAnimationFrame(tick);
+}
+
+async function startTuner(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({
+      audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},
+      video:false
+    });
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:44100});
+    analyser=audioCtx.createAnalyser();
+    analyser.fftSize=2048;
+    analyser.smoothingTimeConstant=0;
+    rawBuf=new Float32Array(analyser.fftSize);
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    document.getElementById('startscr').style.display='none';
+    document.getElementById('tunscr').style.display='block';
+    document.getElementById('ltag').style.display='flex';
+    curIdx=0;results=[];recentHz.length=0;hzLog=[];frameCount=0;
+    buildUI();
+    document.getElementById('curnote').textContent=MELODY[0].name;
+    document.getElementById('curoct').textContent=MELODY[0].oct;
+    tick();
+  }catch(e){
+    document.getElementById('errmsg').textContent='Mic access denied — please allow and retry.';
+  }
+}
+
+function showSummary(){
+  if(animId)cancelAnimationFrame(animId);
+  document.getElementById('tunscr').style.display='none';
+  document.getElementById('ltag').style.display='none';
+  document.getElementById('sumscr').style.display='flex';
+  const good=results.filter(r=>r<=20).length;
+  const pct=Math.round(good/results.length*100);
+  const sc=document.getElementById('sscore');
+  sc.textContent=pct+'%';
+  sc.style.color=pct>=80?'#1D9E75':pct>=50?'#EF9F27':'#E24B4A';
+  document.getElementById('ssub').textContent=good+' of '+MELODY.length+' notes in tune';
+  const lc2=document.getElementById('logcount2');
+  if(lc2) lc2.textContent=hzLog.length+' readings recorded';
+  const sn=document.getElementById('snotes');sn.innerHTML='';
+  results.forEach((r,i)=>{
+    const n=MELODY[i],ok=r<=20;
+    const d=document.createElement('div');
+    d.style.cssText='background:'+(ok?'#081a10':'#1a0808')+';border:1px solid '+(ok?'#1D9E75':'#A32D2D')+';border-radius:8px;padding:8px 12px;text-align:center;min-width:50px;';
+    d.innerHTML='<div style="font-size:14px;font-weight:500;color:'+(ok?'#5DCAA5':'#F09595')+';">'+n.name+n.oct+'</div><div style="font-size:10px;color:'+(ok?'#1D9E75':'#E24B4A')+';">'+(ok?'in tune':Math.round(r)+'¢')+'</div>';
+    sn.appendChild(d);
+  });
+}
+
+function restart(){
+  document.getElementById('sumscr').style.display='none';
+  document.getElementById('tunscr').style.display='block';
+  document.getElementById('ltag').style.display='flex';
+  curIdx=0;results=[];recentHz.length=0;hzLog=[];frameCount=0;
+  buildUI();
+  document.getElementById('curnote').textContent=MELODY[0].name;
+  document.getElementById('curoct').textContent=MELODY[0].oct;
+  document.getElementById('hlbl').textContent='play E5...';
+  document.getElementById('hfill').style.width='0%';
+}
+</script>
