@@ -1,0 +1,24 @@
+{
+  "sampleRate": 44100,
+  "frameSize": 2048,
+  "hopSize": 512,
+  "clips": [
+    {
+      "file": "dataset/open-a4.wav",
+      "expectedNote": "A4",
+      "expectedFrequencyHz": 440,
+      "steadyStartMs": 250,
+      "steadyEndMs": 1700,
+      "restWindowsMs": [
+        [
+          0,
+          180
+        ],
+        [
+          1800,
+          2200
+        ]
+      ]
+    }
+  ]
+}

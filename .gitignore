@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.log
+audio/__tests__/offline-validation/ground-truth.json
+audio/__tests__/offline-validation/dataset/
