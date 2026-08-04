@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import WavDecoder from "wav-decoder";
 import { PitchDetector } from "../../pitchDetector";
 
@@ -47,12 +46,13 @@ function stableFrameResults(
   sampleRate: number,
   frameSize: number,
   hopSize: number,
-  detector: PitchDetector
+  detector: PitchDetector,
+  expectedFrequencyHz?: number
 ): FrameResult[] {
   const frames: FrameResult[] = [];
   for (let offset = 0; offset + frameSize <= pcm.length; offset += hopSize) {
     const frame = pcm.subarray(offset, offset + frameSize);
-    const detection = detector.detect({ samples: frame });
+    const detection = detector.detect({ samples: frame, expectedFrequencyHz });
     const ms = (offset / sampleRate) * 1000;
     frames.push({
       ms,
@@ -133,21 +133,9 @@ function octaveDifference(noteA: string, noteB: string): number {
 }
 
 async function main(): Promise<void> {
-  const root = path.dirname(fileURLToPath(import.meta.url));
+  const root = __dirname;
   const specPath = path.join(root, "ground-truth.json");
   const spec = loadSpec(specPath);
-
-  const detector = new PitchDetector({
-    preprocess: {
-      sampleRate: spec.sampleRate,
-      silenceRmsThreshold: 0.01,
-      lowCutHz: 180,
-      highCutHz: 3500
-    },
-    confidenceThreshold: 0.6,
-    smoothingWindowFrames: 5,
-    expectedNoteWindowSemitones: 3
-  });
 
   let totalSteadyFrames = 0;
   let correctSteadyFrames = 0;
@@ -160,11 +148,30 @@ async function main(): Promise<void> {
     const wavPath = path.resolve(root, clip.file);
     const wav = await loadMonoWav(wavPath);
 
+    const detector = new PitchDetector({
+      preprocess: {
+        sampleRate: spec.sampleRate,
+        silenceRmsThreshold: 0.01,
+        lowCutHz: 180,
+        highCutHz: 3500
+      },
+      confidenceThreshold: 0.6,
+      smoothingWindowFrames: 5,
+      expectedNoteWindowSemitones: 3
+    });
+
     if (wav.sampleRate !== spec.sampleRate) {
       throw new Error(`Sample rate mismatch for ${clip.file}: got ${wav.sampleRate}, expected ${spec.sampleRate}`);
     }
 
-    const frames = stableFrameResults(wav.samples, wav.sampleRate, spec.frameSize, spec.hopSize, detector);
+    const frames = stableFrameResults(
+      wav.samples,
+      wav.sampleRate,
+      spec.frameSize,
+      spec.hopSize,
+      detector,
+      clip.expectedFrequencyHz
+    );
 
     for (const frame of frames) {
       if (withinWindow(frame.ms, clip.steadyStartMs, clip.steadyEndMs)) {

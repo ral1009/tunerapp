@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "phase0:generate-synthetic": "tsx audio/generateSynthetic.ts",
     "phase0:validate": "tsx audio/__tests__/offline-validation/runValidation.ts"
   },
   "dependencies": {
@@ -16,8 +17,5 @@
     "@types/node": "^22.13.4",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
-  },
-  "allowScripts": {
-    "esbuild@0.28.1": true
   }
 }

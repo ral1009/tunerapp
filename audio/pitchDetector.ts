@@ -79,6 +79,51 @@ function estimateConfidence(samples: Float32Array, sampleRate: number, frequency
   return Math.max(0, Math.min(1, normalized));
 }
 
+function estimateFrequencyInWindow(
+  samples: Float32Array,
+  sampleRate: number,
+  minFrequencyHz: number,
+  maxFrequencyHz: number
+): { frequencyHz: number | null; confidence: number } {
+  const minLag = Math.max(1, Math.floor(sampleRate / maxFrequencyHz));
+  const maxLag = Math.min(samples.length - 1, Math.ceil(sampleRate / minFrequencyHz));
+  let bestLag = 0;
+  let bestCorrelation = -Infinity;
+
+  for (let lag = minLag; lag <= maxLag; lag += 1) {
+    let corr = 0;
+    let energyA = 0;
+    let energyB = 0;
+
+    for (let index = 0; index < samples.length - lag; index += 1) {
+      const current = samples[index];
+      const shifted = samples[index + lag];
+      corr += current * shifted;
+      energyA += current * current;
+      energyB += shifted * shifted;
+    }
+
+    if (energyA === 0 || energyB === 0) {
+      continue;
+    }
+
+    const normalized = corr / Math.sqrt(energyA * energyB);
+    if (normalized > bestCorrelation) {
+      bestCorrelation = normalized;
+      bestLag = lag;
+    }
+  }
+
+  if (bestLag === 0 || !Number.isFinite(bestCorrelation) || bestCorrelation <= 0) {
+    return { frequencyHz: null, confidence: 0 };
+  }
+
+  return {
+    frequencyHz: sampleRate / bestLag,
+    confidence: Math.max(0, Math.min(1, bestCorrelation))
+  };
+}
+
 export class PitchDetector {
   private readonly config: PitchDetectorConfig;
   private readonly yin: (samples: number[] | Float32Array) => number | null;
@@ -94,7 +139,9 @@ export class PitchDetector {
       }
     };
 
-    this.yin = YIN({ sampleRate: this.config.preprocess.sampleRate });
+    this.yin = YIN({ sampleRate: this.config.preprocess.sampleRate }) as unknown as (
+      samples: number[] | Float32Array
+    ) => number | null;
     this.smoother = new MedianSmoother(this.config.smoothingWindowFrames);
   }
 
@@ -107,6 +154,19 @@ export class PitchDetector {
         rms: gate.rms,
         reason: "silence"
       };
+    }
+
+    if (input.expectedFrequencyHz && input.expectedFrequencyHz > 0) {
+      const windowMinHz = input.expectedFrequencyHz * Math.pow(2, -this.config.expectedNoteWindowSemitones / 12);
+      const windowMaxHz = input.expectedFrequencyHz * Math.pow(2, this.config.expectedNoteWindowSemitones / 12);
+      const windowEstimate = estimateFrequencyInWindow(processed, this.config.preprocess.sampleRate, windowMinHz, windowMaxHz);
+      if (windowEstimate.frequencyHz && windowEstimate.confidence >= this.config.confidenceThreshold) {
+        return {
+          frequencyHz: this.smoother.add(windowEstimate.frequencyHz),
+          confidence: windowEstimate.confidence,
+          rms: gate.rms
+        };
+      }
     }
 
     const rawFrequency = this.yin(processed);
