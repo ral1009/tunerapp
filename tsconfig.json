@@ -4,6 +4,8 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "types": ["node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -16,6 +18,8 @@
     "audio/**/*.ts",
     "score/**/*.ts",
     "practice/**/*.ts",
-    "storage/**/*.ts"
+    "storage/**/*.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx"
   ]
 }

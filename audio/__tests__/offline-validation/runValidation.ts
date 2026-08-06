@@ -152,10 +152,10 @@ async function main(): Promise<void> {
       preprocess: {
         sampleRate: wav.sampleRate,
         silenceRmsThreshold: 0.02,
-        lowCutHz: 180,
+        lowCutHz: 80,
         highCutHz: 3500
       },
-      confidenceThreshold: 0.6,
+      confidenceThreshold: 0.15,
       smoothingWindowFrames: 5,
       expectedNoteWindowSemitones: 3
     });

@@ -6,16 +6,25 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "preview:web": "vite preview",
     "phase0:generate-synthetic": "tsx audio/generateSynthetic.ts",
     "phase0:validate": "tsx audio/__tests__/offline-validation/runValidation.ts"
   },
   "dependencies": {
     "pitchfinder": "^2.3.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "wav-decoder": "^1.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.4",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "tsx": "^4.20.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vite": "^8.2.0"
   }
 }
