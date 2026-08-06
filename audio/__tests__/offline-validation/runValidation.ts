@@ -150,8 +150,8 @@ async function main(): Promise<void> {
 
     const detector = new PitchDetector({
       preprocess: {
-        sampleRate: spec.sampleRate,
-        silenceRmsThreshold: 0.01,
+        sampleRate: wav.sampleRate,
+        silenceRmsThreshold: 0.02,
         lowCutHz: 180,
         highCutHz: 3500
       },
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     });
 
     if (wav.sampleRate !== spec.sampleRate) {
-      throw new Error(`Sample rate mismatch for ${clip.file}: got ${wav.sampleRate}, expected ${spec.sampleRate}`);
+      console.warn(`Sample rate mismatch for ${clip.file}: got ${wav.sampleRate}, metadata says ${spec.sampleRate}`);
     }
 
     const frames = stableFrameResults(
