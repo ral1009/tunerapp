@@ -8,7 +8,7 @@ export interface PreprocessConfig {
 export const DEFAULT_PREPROCESS_CONFIG: PreprocessConfig = {
   sampleRate: 44_100,
   silenceRmsThreshold: 0.01,
-  lowCutHz: 180,
+  lowCutHz: 80,
   highCutHz: 3500
 };
 

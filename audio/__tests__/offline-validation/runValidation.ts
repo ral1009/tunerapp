@@ -98,15 +98,39 @@ function loadSpec(specPath: string): ValidationSpec {
   return JSON.parse(fs.readFileSync(specPath, "utf8")) as ValidationSpec;
 }
 
+function readWavSampleRate(buffer: Buffer): number {
+  if (buffer.length < 44) {
+    throw new Error("WAV header is too short to contain fmt metadata.");
+  }
+
+  const riffHeader = buffer.toString("ascii", 0, 4);
+  if (riffHeader !== "RIFF") {
+    throw new Error("WAV file is missing the RIFF header.");
+  }
+
+  const fmtChunk = buffer.indexOf(Buffer.from("fmt ", "ascii"));
+  if (fmtChunk === -1) {
+    throw new Error("WAV file is missing the fmt chunk.");
+  }
+
+  const sampleRate = buffer.readUInt32LE(fmtChunk + 12);
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+    throw new Error("WAV file has an invalid sample rate in the fmt chunk.");
+  }
+
+  return sampleRate;
+}
+
 async function loadMonoWav(filePath: string): Promise<{ sampleRate: number; samples: Float32Array }> {
   const buffer = fs.readFileSync(filePath);
+  const csvSampleRate = readWavSampleRate(buffer);
   const audioData = await WavDecoder.decode(buffer);
   if (audioData.channelData.length === 0) {
     throw new Error(`No channel data in ${filePath}`);
   }
 
   return {
-    sampleRate: audioData.sampleRate,
+    sampleRate: csvSampleRate,
     samples: audioData.channelData[0]
   };
 }
@@ -163,6 +187,8 @@ async function main(): Promise<void> {
     if (wav.sampleRate !== spec.sampleRate) {
       console.warn(`Sample rate mismatch for ${clip.file}: got ${wav.sampleRate}, metadata says ${spec.sampleRate}`);
     }
+
+    // The bundled validation clips are 48kHz fixtures; this path will adapt to any header-defined rate automatically.
 
     const frames = stableFrameResults(
       wav.samples,

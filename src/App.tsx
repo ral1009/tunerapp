@@ -10,9 +10,9 @@ import {
 const LIVE_CAPTURE_OPTIONS: StartCaptureOptions = {
   frameSize: 2048,
   hopSize: 512,
-  silenceRmsThreshold: 0.005,
   confidenceThreshold: 0.4,
-  lowCutHz: 150,
+  silenceRmsThreshold: 0.005,
+  lowCutHz: 80,
   highCutHz: 3500,
   smoothingWindowFrames: 5,
   expectedNoteWindowSemitones: 3,
@@ -44,6 +44,8 @@ function statusLabel(status: LiveCaptureState["status"]): string {
   switch (status) {
     case "requesting":
       return "Requesting microphone";
+    case "calibrating":
+      return "Calibrating";
     case "listening":
       return "Listening";
     case "suspended":
@@ -101,6 +103,7 @@ export default function App(): ReactElement {
 
   const noteDisplay = captureState.isSilent || captureState.frequencyHz === null ? "No note" : captureState.note ?? "--";
   const pitchClass = captureState.isSilent ? "idle" : captureState.note ? "active" : "searching";
+  const levelRatio = captureState.silenceRmsThreshold > 0 ? Math.min(1, captureState.rms / captureState.silenceRmsThreshold) : 0;
 
   return (
     <div style={styles.page}>
@@ -156,6 +159,27 @@ export default function App(): ReactElement {
             <div style={styles.readoutCard}>
               <div style={styles.readoutLabel}>Confidence</div>
               <div style={styles.readoutValue}>{formatConfidence(captureState.confidence)}</div>
+            </div>
+          </div>
+
+          <div style={styles.diagnosticsGrid}>
+            <div style={styles.diagnosticCard}>
+              <div style={styles.readoutLabel}>Live RMS</div>
+              <div style={styles.readoutValue}>{captureState.rms.toFixed(4)}</div>
+              <div style={styles.meterTrack} aria-hidden="true">
+                <div style={{ ...styles.meterFill, width: `${Math.max(6, levelRatio * 100)}%` }} />
+              </div>
+              <div style={styles.diagnosticHint}>{captureState.isSilent ? "Silence floor" : "Bow energy detected"}</div>
+            </div>
+            <div style={styles.diagnosticCard}>
+              <div style={styles.readoutLabel}>Target threshold</div>
+              <div style={styles.readoutValue}>{captureState.silenceRmsThreshold.toFixed(4)}</div>
+              <div style={styles.diagnosticHint}>Auto-calibrated from startup noise</div>
+            </div>
+            <div style={styles.diagnosticCard}>
+              <div style={styles.readoutLabel}>Gain</div>
+              <div style={styles.readoutValue}>{captureState.gainScalar.toFixed(1)}x Boost</div>
+              <div style={styles.diagnosticHint}>Software gain for weak microphones</div>
             </div>
           </div>
 
@@ -251,6 +275,12 @@ const styles: Record<string, CSSProperties> = {
     gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
     gap: "16px"
   },
+  diagnosticsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: "16px",
+    marginTop: "16px"
+  },
   readoutCard: {
     borderRadius: "20px",
     padding: "18px",
@@ -260,6 +290,17 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     justifyContent: "space-between"
+  },
+  diagnosticCard: {
+    borderRadius: "20px",
+    padding: "18px",
+    background: "rgba(255, 255, 255, 0.03)",
+    border: "1px solid rgba(255, 255, 255, 0.08)",
+    minHeight: "138px",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "space-between",
+    gap: "10px"
   },
   readoutLabel: {
     color: "rgba(204, 214, 232, 0.7)",
@@ -276,6 +317,24 @@ const styles: Record<string, CSSProperties> = {
     fontSize: "clamp(1.15rem, 2.3vw, 1.6rem)",
     fontWeight: 600,
     letterSpacing: "-0.03em"
+  },
+  meterTrack: {
+    width: "100%",
+    height: "10px",
+    borderRadius: "999px",
+    background: "rgba(255, 255, 255, 0.06)",
+    overflow: "hidden"
+  },
+  meterFill: {
+    height: "100%",
+    borderRadius: "inherit",
+    background: "linear-gradient(90deg, #4cb2ff 0%, #8ee8cb 100%)",
+    boxShadow: "0 0 18px rgba(76, 178, 255, 0.45)"
+  },
+  diagnosticHint: {
+    color: "rgba(204, 214, 232, 0.68)",
+    fontSize: "13px",
+    lineHeight: 1.4
   },
   metaRow: {
     display: "grid",
@@ -343,6 +402,10 @@ const statusStyles: Record<LiveCaptureState["status"], CSSProperties> = {
   requesting: {
     background: "rgba(111, 191, 255, 0.14)",
     color: "#bfe7ff"
+  },
+  calibrating: {
+    background: "rgba(255, 193, 109, 0.16)",
+    color: "#ffe0aa"
   },
   listening: {
     background: "rgba(107, 232, 180, 0.16)",

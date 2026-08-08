@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { PitchDetector, type PitchDetectionResult } from "../pitchDetector";
+import { calculateRms } from "../preprocessing";
 
 export interface PcmFrame {
   samples: Float32Array;
@@ -9,7 +10,7 @@ export interface PcmFrame {
   timestampMs: number;
 }
 
-export type CaptureStatus = "idle" | "requesting" | "listening" | "suspended" | "error";
+export type CaptureStatus = "idle" | "requesting" | "calibrating" | "listening" | "suspended" | "error";
 
 export interface StartCaptureOptions {
   sampleRate?: number;
@@ -47,6 +48,8 @@ export interface LiveCaptureState extends LivePitchFrame {
   status: CaptureStatus;
   frameSize: number;
   hopSize: number;
+  silenceRmsThreshold: number;
+  gainScalar: number;
   error: CaptureErrorInfo | null;
 }
 
@@ -72,12 +75,14 @@ export interface AudioCaptureModule {
 const DEFAULT_FRAME_SIZE = 2048;
 const DEFAULT_HOP_SIZE = 512;
 const DEFAULT_CHANNEL_COUNT = 1;
-const DEFAULT_SILENCE_RMS_THRESHOLD = 0.02;
-const DEFAULT_LOW_CUT_HZ = 180;
+const DEFAULT_SILENCE_RMS_THRESHOLD = 0.005;
+const DEFAULT_LOW_CUT_HZ = 80;
 const DEFAULT_HIGH_CUT_HZ = 3500;
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.6;
 const DEFAULT_SMOOTHING_WINDOW_FRAMES = 5;
 const DEFAULT_EXPECTED_NOTE_WINDOW_SEMITONES = 3;
+const CALIBRATION_WINDOW_MS = 500;
+const MAX_GAIN_SCALAR = 8;
 const WORKLET_NAME = "tunerapp-pcm-frame-processor";
 
 type WorkletFrameMessage = {
@@ -195,6 +200,8 @@ function createDefaultState(config: CaptureConfig): LiveCaptureState {
     isSilent: true,
     frameSize: config.frameSize,
     hopSize: config.hopSize,
+    silenceRmsThreshold: config.silenceRmsThreshold,
+    gainScalar: 1,
     error: null
   };
 }
@@ -225,11 +232,23 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   private frameBufferLength = 0;
   private nextFrameStartSampleIndex = 0;
   private totalSamplesReceived = 0;
+  private analysisFrameSize = DEFAULT_FRAME_SIZE;
   private isStopping = false;
   private isPaused = false;
+  private isCalibrating = false;
+  private isFinalizingCalibration = false;
   private resumeListenersInstalled = false;
   private resumeListener: (() => void) | null = null;
   private beforeUnloadListener: (() => void) | null = null;
+  private calibrationTimer: ReturnType<typeof setTimeout> | null = null;
+  private calibrationStartedAtMs = 0;
+  private calibrationNoiseRmsSum = 0;
+  private calibrationFrameCount = 0;
+  private calibrationPeakSignalRms = 0;
+  private calibratedSilenceRmsThreshold = DEFAULT_SILENCE_RMS_THRESHOLD;
+  private detectorSilenceRmsThreshold = DEFAULT_SILENCE_RMS_THRESHOLD;
+  private gainScalar = 1;
+  private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly stateListeners = new Set<(state: LiveCaptureState) => void>();
 
   constructor() {
@@ -251,10 +270,14 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   async start(options: StartCaptureOptions = {}, callbacks: LiveCaptureCallbacks = {}): Promise<LiveCaptureState> {
     this.callbacks = callbacks;
 
-    if (this.audioContext && (this.state.status === "listening" || this.state.status === "suspended")) {
+    if (this.audioContext && (this.state.status === "listening" || this.state.status === "suspended" || this.state.status === "calibrating")) {
       this.isPaused = false;
       await this.ensureAudioContextRunning();
-      this.emitState({ status: "listening", error: null });
+      if (this.state.status === "calibrating") {
+        this.emitState({ status: "calibrating", error: null });
+      } else {
+        this.emitState({ status: "listening", error: null });
+      }
       return this.state;
     }
 
@@ -278,6 +301,15 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     this.nextFrameStartSampleIndex = 0;
     this.isPaused = false;
     this.isStopping = false;
+    this.isCalibrating = false;
+    this.isFinalizingCalibration = false;
+    this.calibratedSilenceRmsThreshold = this.config.silenceRmsThreshold;
+    this.detectorSilenceRmsThreshold = this.config.silenceRmsThreshold;
+    this.gainScalar = 1;
+    this.calibrationNoiseRmsSum = 0;
+    this.calibrationFrameCount = 0;
+    this.calibrationPeakSignalRms = 0;
+    this.clearWatchdogTimer();
 
     const audioContextConstructor = getAudioContextConstructor();
     if (!audioContextConstructor) {
@@ -299,10 +331,11 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          channelCount: this.config.channelCount,
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
+          channelCount: 1,
+          sampleRate: { ideal: 48_000 },
           ...(this.config.deviceId ? { deviceId: { exact: this.config.deviceId } } : {})
         }
       });
@@ -310,17 +343,6 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       const audioContext = new audioContextConstructor();
       this.audioContext = audioContext;
       this.mediaStream = mediaStream;
-      this.detector = new PitchDetector({
-        preprocess: {
-          sampleRate: audioContext.sampleRate,
-          silenceRmsThreshold: this.config.silenceRmsThreshold,
-          lowCutHz: this.config.lowCutHz,
-          highCutHz: this.config.highCutHz
-        },
-        confidenceThreshold: this.config.confidenceThreshold,
-        smoothingWindowFrames: this.config.smoothingWindowFrames,
-        expectedNoteWindowSemitones: this.config.expectedNoteWindowSemitones
-      });
 
       this.mediaSource = audioContext.createMediaStreamSource(mediaStream);
       this.workletModuleUrl = this.installWorkletModule();
@@ -350,11 +372,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       this.installResumeListeners();
       await this.ensureAudioContextRunning();
 
-      this.emitState({
-        status: audioContext.state === "suspended" ? "suspended" : "listening",
-        sampleRate: audioContext.sampleRate,
-        error: null
-      });
+      this.beginCalibration(audioContext.sampleRate);
 
       return this.state;
     } catch (error) {
@@ -431,26 +449,176 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     }
   }
 
-  private handlePcmChunk(chunk: Float32Array, sampleRate: number): void {
-    if (!this.detector || this.isStopping || this.state.status === "error") {
+  private clearWatchdogTimer(): void {
+    if (this.watchdogTimer) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  private async restartAudioPipeline(): Promise<void> {
+    if (this.isStopping || this.state.status === "error") {
       return;
     }
 
-    this.ensureFrameBufferCapacity(this.frameBufferLength + chunk.length);
-    this.frameBuffer.set(chunk, this.frameBufferLength);
-    this.frameBufferLength += chunk.length;
-    this.totalSamplesReceived += chunk.length;
+    this.clearWatchdogTimer();
 
-    while (this.frameBufferLength >= this.config.frameSize) {
-      const frame = this.frameBuffer.subarray(0, this.config.frameSize);
-      const samples = frame.slice();
+    try {
+      await this.dispose(true);
+      await this.start(
+        {
+          frameSize: this.config.frameSize,
+          hopSize: this.config.hopSize,
+          channelCount: this.config.channelCount,
+          silenceRmsThreshold: this.config.silenceRmsThreshold,
+          lowCutHz: this.config.lowCutHz,
+          highCutHz: this.config.highCutHz,
+          confidenceThreshold: this.config.confidenceThreshold,
+          smoothingWindowFrames: this.config.smoothingWindowFrames,
+          expectedNoteWindowSemitones: this.config.expectedNoteWindowSemitones,
+          deviceId: this.config.deviceId
+        },
+        this.callbacks
+      );
+    } catch (error) {
+      const normalizedError = createCaptureError(error);
+      this.emitState({ status: "error", error: normalizedError });
+      this.callbacks.onError?.(normalizedError);
+    }
+  }
+
+  private beginCalibration(sampleRate: number): void {
+    this.analysisFrameSize = Math.max(this.config.frameSize, sampleRate >= 48_000 ? 4096 : 2048);
+    this.isCalibrating = true;
+    this.calibrationStartedAtMs = Date.now();
+    this.emitState({
+      status: "calibrating",
+      sampleRate,
+      frameSize: this.analysisFrameSize,
+      silenceRmsThreshold: this.calibratedSilenceRmsThreshold,
+      gainScalar: this.gainScalar,
+      error: null
+    });
+
+    this.clearCalibrationTimer();
+    this.calibrationTimer = setTimeout(() => {
+      void this.finalizeCalibration(sampleRate);
+    }, CALIBRATION_WINDOW_MS);
+  }
+
+  private clearCalibrationTimer(): void {
+    if (this.calibrationTimer) {
+      clearTimeout(this.calibrationTimer);
+      this.calibrationTimer = null;
+    }
+  }
+
+  private createDetector(sampleRate: number, silenceRmsThreshold: number): PitchDetector {
+    return new PitchDetector({
+      preprocess: {
+        sampleRate,
+        silenceRmsThreshold,
+        lowCutHz: this.config.lowCutHz,
+        highCutHz: this.config.highCutHz
+      },
+      confidenceThreshold: this.config.confidenceThreshold,
+      smoothingWindowFrames: this.config.smoothingWindowFrames,
+      expectedNoteWindowSemitones: this.config.expectedNoteWindowSemitones
+    });
+  }
+
+  private updateCalibrationMetrics(rms: number): void {
+    this.calibrationNoiseRmsSum += rms;
+    this.calibrationFrameCount += 1;
+    this.calibrationPeakSignalRms = Math.max(this.calibrationPeakSignalRms, rms);
+
+    const meanNoiseRms = this.calibrationFrameCount > 0 ? this.calibrationNoiseRmsSum / this.calibrationFrameCount : 0;
+    const rawThreshold = Math.max(DEFAULT_SILENCE_RMS_THRESHOLD, meanNoiseRms * 1.5);
+    const gainScalar = Math.max(1, Math.min(MAX_GAIN_SCALAR, 0.05 / Math.max(0.002, this.calibrationPeakSignalRms || rms)));
+
+    this.calibratedSilenceRmsThreshold = rawThreshold;
+    this.detectorSilenceRmsThreshold = rawThreshold * gainScalar;
+    this.gainScalar = gainScalar;
+
+    this.emitState({
+      status: "calibrating",
+      rms,
+      silenceRmsThreshold: rawThreshold,
+      gainScalar,
+      error: null
+    });
+  }
+
+  private applyGain(samples: Float32Array): Float32Array {
+    if (this.gainScalar === 1) {
+      return samples;
+    }
+
+    for (let index = 0; index < samples.length; index += 1) {
+      samples[index] *= this.gainScalar;
+    }
+
+    return samples;
+  }
+
+  private async finalizeCalibration(sampleRate: number): Promise<void> {
+    if (!this.isCalibrating || this.isFinalizingCalibration || !this.audioContext || this.isStopping) {
+      return;
+    }
+
+    this.isFinalizingCalibration = true;
+    this.clearCalibrationTimer();
+
+    try {
+      const meanNoiseRms = this.calibrationFrameCount > 0 ? this.calibrationNoiseRmsSum / this.calibrationFrameCount : 0;
+      const rawThreshold = Math.max(DEFAULT_SILENCE_RMS_THRESHOLD, meanNoiseRms * 1.5);
+      const gainScalar = Math.max(1, Math.min(MAX_GAIN_SCALAR, 0.05 / Math.max(0.002, this.calibrationPeakSignalRms || meanNoiseRms || 0)));
+      const detectorThreshold = rawThreshold * gainScalar;
+
+      this.calibratedSilenceRmsThreshold = rawThreshold;
+      this.detectorSilenceRmsThreshold = detectorThreshold;
+      this.gainScalar = gainScalar;
+      this.config = {
+        ...this.config,
+        silenceRmsThreshold: rawThreshold
+      };
+      this.detector = this.createDetector(sampleRate, detectorThreshold);
+      this.isCalibrating = false;
+
+      this.emitState({
+        status: this.audioContext.state === "suspended" ? "suspended" : "listening",
+        sampleRate,
+        frameSize: this.analysisFrameSize,
+        silenceRmsThreshold: rawThreshold,
+        gainScalar,
+        error: null
+      });
+
+      this.processBufferedFrames(sampleRate);
+    } finally {
+      this.isFinalizingCalibration = false;
+    }
+  }
+
+  private processBufferedFrames(sampleRate: number): void {
+    if (!this.detector || this.isStopping) {
+      return;
+    }
+
+    const frameSize = this.analysisFrameSize;
+
+    while (this.frameBufferLength >= frameSize) {
+      const frame = this.frameBuffer.subarray(0, frameSize);
+      const rawSamples = frame.slice();
+      const rawRms = calculateRms(rawSamples);
       const timestampMs = (this.nextFrameStartSampleIndex / sampleRate) * 1000;
-      const detection = this.detector.detect({ samples });
-      const liveFrame = this.toLiveFrame(detection, sampleRate, timestampMs, samples);
+      const detection = this.detector.detect({ samples: this.applyGain(rawSamples) });
+      const liveFrame = this.toLiveFrame(detection, sampleRate, timestampMs, rawSamples, rawRms);
 
       this.emitState({
         status: this.audioContext?.state === "suspended" ? "suspended" : "listening",
         sampleRate,
+        frameSize,
         timestampMs: liveFrame.timestampMs,
         frequencyHz: liveFrame.frequencyHz,
         note: liveFrame.note,
@@ -458,12 +626,14 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
         confidence: liveFrame.confidence,
         rms: liveFrame.rms,
         isSilent: liveFrame.isSilent,
+        silenceRmsThreshold: this.calibratedSilenceRmsThreshold,
+        gainScalar: this.gainScalar,
         error: null
       });
 
       this.callbacks.onFrame?.(liveFrame);
 
-      if (this.frameBufferLength === this.config.frameSize) {
+      if (this.frameBufferLength === frameSize) {
         this.frameBufferLength = 0;
       } else {
         this.frameBuffer.copyWithin(0, this.config.hopSize, this.frameBufferLength);
@@ -472,6 +642,44 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
 
       this.nextFrameStartSampleIndex += this.config.hopSize;
     }
+  }
+
+  private handlePcmChunk(chunk: Float32Array, sampleRate: number): void {
+    if (this.isStopping || this.state.status === "error") {
+      return;
+    }
+
+    this.ensureFrameBufferCapacity(this.frameBufferLength + chunk.length);
+    this.frameBuffer.set(chunk, this.frameBufferLength);
+    this.frameBufferLength += chunk.length;
+    this.totalSamplesReceived += chunk.length;
+
+    const rawRms = calculateRms(chunk);
+
+    if (this.state.status === "listening" && rawRms < 0.002) {
+      if (!this.watchdogTimer) {
+        this.watchdogTimer = setTimeout(() => {
+          this.watchdogTimer = null;
+          void this.restartAudioPipeline();
+        }, 2500);
+      }
+    } else {
+      this.clearWatchdogTimer();
+    }
+
+    if (this.isCalibrating) {
+      this.updateCalibrationMetrics(rawRms);
+      if (Date.now() - this.calibrationStartedAtMs >= CALIBRATION_WINDOW_MS) {
+        void this.finalizeCalibration(sampleRate);
+      }
+      return;
+    }
+
+    if (!this.detector) {
+      return;
+    }
+
+    this.processBufferedFrames(sampleRate);
   }
 
   private ensureFrameBufferCapacity(requiredCapacity: number): void {
@@ -493,9 +701,10 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     detection: PitchDetectionResult,
     sampleRate: number,
     timestampMs: number,
-    samples: Float32Array
+    samples: Float32Array,
+    rawRms: number
   ): LivePitchFrame {
-    const isSilent = detection.reason === "silence" || detection.rms < this.config.silenceRmsThreshold;
+    const isSilent = detection.reason === "silence" || rawRms < this.calibratedSilenceRmsThreshold;
 
     if (!detection.frequencyHz || detection.frequencyHz <= 0) {
       return {
@@ -506,7 +715,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
         note: null,
         centsOff: null,
         confidence: detection.confidence,
-        rms: detection.rms,
+        rms: rawRms,
         isSilent
       };
     }
@@ -520,7 +729,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       note: noteInfo.note,
       centsOff: noteInfo.centsOff,
       confidence: detection.confidence,
-      rms: detection.rms,
+      rms: rawRms,
       isSilent
     };
   }
@@ -535,6 +744,10 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
 
   private async dispose(releaseHardware: boolean): Promise<void> {
     this.isStopping = true;
+    this.clearCalibrationTimer();
+    this.clearWatchdogTimer();
+    this.isCalibrating = false;
+    this.isFinalizingCalibration = false;
 
     if (typeof window !== "undefined" && this.resumeListener) {
       window.removeEventListener("pointerdown", this.resumeListener);

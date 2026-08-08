@@ -20,6 +20,16 @@ export interface PitchDetectionResult {
   reason?: "silence" | "low_confidence" | "outside_expected_window" | "detector_no_pitch";
 }
 
+const MIN_DETECTABLE_FREQUENCY_HZ = 80;
+const MAX_DETECTABLE_FREQUENCY_HZ = 3500;
+const OCTAVE_RECOVERY_MIN_HZ = 350;
+const OCTAVE_RECOVERY_MAX_HZ = 600;
+const OCTAVE_RECOVERY_MIN_CONFIDENCE = 0.2;
+const OCTAVE_RECOVERY_MAX_CONFIDENCE = 0.55;
+const OCTAVE_RECOVERY_VALLEY_RATIO = 1.15;
+const EXPECTED_NOTE_STABILITY_CONFIDENCE = 0.8;
+const EXPECTED_NOTE_STABILITY_SEMITONE_WINDOW = 0.5;
+
 const DEFAULT_CONFIG: PitchDetectorConfig = {
   preprocess: DEFAULT_PREPROCESS_CONFIG,
   confidenceThreshold: 0.6,
@@ -79,6 +89,49 @@ function estimateConfidence(samples: Float32Array, sampleRate: number, frequency
   return Math.max(0, Math.min(1, normalized));
 }
 
+function differenceAtLag(samples: Float32Array, lag: number): number {
+  if (lag <= 0 || lag >= samples.length) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  let sumSquares = 0;
+  let count = 0;
+
+  for (let index = 0; index < samples.length - lag; index += 1) {
+    const delta = samples[index] - samples[index + lag];
+    sumSquares += delta * delta;
+    count += 1;
+  }
+
+  return count > 0 ? sumSquares / count : Number.POSITIVE_INFINITY;
+}
+
+function recoverSubOctaveFrequency(samples: Float32Array, sampleRate: number, frequencyHz: number, confidence: number): number {
+  if (
+    frequencyHz < OCTAVE_RECOVERY_MIN_HZ ||
+    frequencyHz > OCTAVE_RECOVERY_MAX_HZ ||
+    confidence < OCTAVE_RECOVERY_MIN_CONFIDENCE ||
+    confidence > OCTAVE_RECOVERY_MAX_CONFIDENCE
+  ) {
+    return frequencyHz;
+  }
+
+  const candidateLag = Math.max(1, Math.round(sampleRate / frequencyHz));
+  const subOctaveLag = candidateLag * 2;
+  if (subOctaveLag >= samples.length) {
+    return frequencyHz;
+  }
+
+  const primaryValley = differenceAtLag(samples, candidateLag);
+  const subOctaveValley = differenceAtLag(samples, subOctaveLag);
+
+  if (!Number.isFinite(primaryValley) || !Number.isFinite(subOctaveValley) || primaryValley <= 0) {
+    return frequencyHz;
+  }
+
+  return subOctaveValley <= primaryValley * OCTAVE_RECOVERY_VALLEY_RATIO ? frequencyHz / 2 : frequencyHz;
+}
+
 function estimateFrequencyInWindow(
   samples: Float32Array,
   sampleRate: number,
@@ -124,6 +177,10 @@ function estimateFrequencyInWindow(
   };
 }
 
+function estimateFrequencyAcrossRange(samples: Float32Array, sampleRate: number): { frequencyHz: number | null; confidence: number } {
+  return estimateFrequencyInWindow(samples, sampleRate, MIN_DETECTABLE_FREQUENCY_HZ, MAX_DETECTABLE_FREQUENCY_HZ);
+}
+
 export class PitchDetector {
   private readonly config: PitchDetectorConfig;
   private readonly yin: (samples: number[] | Float32Array) => number | null;
@@ -160,7 +217,14 @@ export class PitchDetector {
       const windowMinHz = input.expectedFrequencyHz * Math.pow(2, -this.config.expectedNoteWindowSemitones / 12);
       const windowMaxHz = input.expectedFrequencyHz * Math.pow(2, this.config.expectedNoteWindowSemitones / 12);
       const windowEstimate = estimateFrequencyInWindow(processed, this.config.preprocess.sampleRate, windowMinHz, windowMaxHz);
-      if (windowEstimate.frequencyHz && windowEstimate.confidence >= this.config.confidenceThreshold) {
+      const windowDelta = windowEstimate.frequencyHz
+        ? Math.abs(semitoneDelta(input.expectedFrequencyHz, windowEstimate.frequencyHz))
+        : Number.POSITIVE_INFINITY;
+      if (
+        windowEstimate.frequencyHz &&
+        (windowEstimate.confidence >= Math.max(this.config.confidenceThreshold, EXPECTED_NOTE_STABILITY_CONFIDENCE) ||
+          windowDelta <= EXPECTED_NOTE_STABILITY_SEMITONE_WINDOW)
+      ) {
         return {
           frequencyHz: this.smoother.add(windowEstimate.frequencyHz),
           confidence: windowEstimate.confidence,
@@ -169,7 +233,15 @@ export class PitchDetector {
       }
     }
 
-    const rawFrequency = this.yin(processed);
+    const yinFrequency = this.yin(processed);
+    const fallbackEstimate = estimateFrequencyAcrossRange(processed, this.config.preprocess.sampleRate);
+    const usesFallbackEstimate =
+      !yinFrequency ||
+      !Number.isFinite(yinFrequency) ||
+      yinFrequency < MIN_DETECTABLE_FREQUENCY_HZ ||
+      yinFrequency > MAX_DETECTABLE_FREQUENCY_HZ;
+    const rawFrequency = usesFallbackEstimate ? fallbackEstimate.frequencyHz : yinFrequency;
+
     if (!rawFrequency || !Number.isFinite(rawFrequency)) {
       return {
         frequencyHz: null,
@@ -179,8 +251,27 @@ export class PitchDetector {
       };
     }
 
+    if (rawFrequency < MIN_DETECTABLE_FREQUENCY_HZ || rawFrequency > MAX_DETECTABLE_FREQUENCY_HZ) {
+      return {
+        frequencyHz: null,
+        confidence: 0,
+        rms: gate.rms,
+        reason: "detector_no_pitch"
+      };
+    }
+
+    const candidateConfidence = usesFallbackEstimate
+      ? fallbackEstimate.confidence
+      : estimateConfidence(processed, this.config.preprocess.sampleRate, rawFrequency);
+    const correctedFrequency = recoverSubOctaveFrequency(
+      processed,
+      this.config.preprocess.sampleRate,
+      rawFrequency,
+      candidateConfidence
+    );
+
     if (input.expectedFrequencyHz && input.expectedFrequencyHz > 0) {
-      const delta = Math.abs(semitoneDelta(input.expectedFrequencyHz, rawFrequency));
+      const delta = Math.abs(semitoneDelta(input.expectedFrequencyHz, correctedFrequency));
       if (delta > this.config.expectedNoteWindowSemitones) {
         return {
           frequencyHz: null,
@@ -191,7 +282,7 @@ export class PitchDetector {
       }
     }
 
-    const confidence = estimateConfidence(processed, this.config.preprocess.sampleRate, rawFrequency);
+    const confidence = estimateConfidence(processed, this.config.preprocess.sampleRate, correctedFrequency);
     if (confidence < this.config.confidenceThreshold) {
       return {
         frequencyHz: null,
@@ -201,8 +292,23 @@ export class PitchDetector {
       };
     }
 
+    if (input.expectedFrequencyHz && input.expectedFrequencyHz > 0) {
+      const expectedDelta = Math.abs(semitoneDelta(input.expectedFrequencyHz, correctedFrequency));
+      if (
+        confidence < Math.max(this.config.confidenceThreshold, EXPECTED_NOTE_STABILITY_CONFIDENCE) &&
+        expectedDelta > EXPECTED_NOTE_STABILITY_SEMITONE_WINDOW
+      ) {
+        return {
+          frequencyHz: null,
+          confidence,
+          rms: gate.rms,
+          reason: "low_confidence"
+        };
+      }
+    }
+
     return {
-      frequencyHz: this.smoother.add(rawFrequency),
+      frequencyHz: this.smoother.add(correctedFrequency),
       confidence,
       rms: gate.rms
     };
