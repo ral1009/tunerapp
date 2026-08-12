@@ -19,7 +19,7 @@ TMP_ROOT.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="HOMR Sheet Parser")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["https://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

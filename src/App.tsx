@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactElement } from "react";
+import type { ChangeEvent, CSSProperties, ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
 import {
   createMicrophoneCaptureController,
@@ -6,6 +6,10 @@ import {
   type MicrophoneCaptureController,
   type StartCaptureOptions
 } from "../audio/captureModule";
+import { importPhotoToScore, type OmrImportResult } from "../score/omrImport";
+import { renderScore } from "../score/renderer";
+
+type ImportState = "idle" | "loading" | "success" | "error";
 
 const LIVE_CAPTURE_OPTIONS: StartCaptureOptions = {
   frameSize: 2048,
@@ -67,6 +71,11 @@ export default function App(): ReactElement {
   const [captureState, setCaptureState] = useState<LiveCaptureState>(() => controllerRef.current!.getState());
   const [isStarting, setIsStarting] = useState(false);
 
+  const [importState, setImportState] = useState<ImportState>("idle");
+  const [importResult, setImportResult] = useState<OmrImportResult | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const scoreContainerRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
     const controller = controllerRef.current!;
     const unsubscribe = controller.subscribe(setCaptureState);
@@ -76,6 +85,15 @@ export default function App(): ReactElement {
       void controller.stop();
     };
   }, []);
+
+  useEffect(() => {
+    if (importState !== "success" || !importResult || !scoreContainerRef.current) {
+      return;
+    }
+
+    const handle = renderScore(importResult.score, scoreContainerRef.current);
+    return () => handle.unmount();
+  }, [importState, importResult]);
 
   async function handleStart(): Promise<void> {
     const controller = controllerRef.current;
@@ -99,6 +117,28 @@ export default function App(): ReactElement {
 
   async function handleStop(): Promise<void> {
     await controllerRef.current?.stop();
+  }
+
+  async function handleSheetFileSelected(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    setImportState("loading");
+    setImportError(null);
+    setImportResult(null);
+
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const result = await importPhotoToScore(bytes);
+      setImportResult(result);
+      setImportState("success");
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Unknown error while importing sheet music.");
+      setImportState("error");
+    }
   }
 
   const noteDisplay = captureState.isSilent || captureState.frequencyHz === null ? "No note" : captureState.note ?? "--";
@@ -215,6 +255,54 @@ export default function App(): ReactElement {
           <p style={styles.caption}>
             Microphone processing is configured for violin acoustics with echo cancellation, noise suppression, and automatic gain control disabled.
           </p>
+        </section>
+
+        <section style={styles.importCard}>
+          <div style={styles.topRow}>
+            <div>
+              <p style={styles.kicker}>Sheet music import</p>
+              <h2 style={styles.subtitle}>Upload a photo</h2>
+            </div>
+            {importState === "loading" ? <span style={{ ...styles.statusPill, ...statusStyles.calibrating }}>Parsing sheet…</span> : null}
+          </div>
+
+          <label style={styles.secondaryButton}>
+            Choose sheet music photo
+            <input type="file" accept="image/*" onChange={handleSheetFileSelected} style={styles.hiddenFileInput} />
+          </label>
+
+          {importState === "error" && importError ? <div style={styles.errorBox}>{importError}</div> : null}
+
+          {importState === "success" && importResult ? (
+            <div style={styles.importResult}>
+              <div style={styles.metaRow}>
+                <div>
+                  <div style={styles.metaLabel}>Title</div>
+                  <div style={styles.metaValue}>
+                    {importResult.score.title}
+                    {importResult.score.composer ? ` — ${importResult.score.composer}` : ""}
+                  </div>
+                </div>
+                <div>
+                  <div style={styles.metaLabel}>Tempo</div>
+                  <div style={styles.metaValue}>{importResult.score.tempoBpm} BPM</div>
+                </div>
+                <div>
+                  <div style={styles.metaLabel}>Key / Time</div>
+                  <div style={styles.metaValue}>
+                    {importResult.score.keySignature} · {importResult.score.timeSignature}
+                  </div>
+                </div>
+              </div>
+
+              <p style={styles.diagnosticHint}>
+                {importResult.score.measures.reduce((total, measure) => total + measure.notes.length, 0)} notes detected across{" "}
+                {importResult.score.measures.length} measures.
+              </p>
+
+              <div ref={scoreContainerRef} style={styles.scoreContainer} />
+            </div>
+          ) : null}
         </section>
       </main>
     </div>
@@ -391,6 +479,42 @@ const styles: Record<string, CSSProperties> = {
     color: "rgba(204, 214, 232, 0.68)",
     lineHeight: 1.55,
     maxWidth: "68ch"
+  },
+  importCard: {
+    position: "relative",
+    overflow: "hidden",
+    borderRadius: "28px",
+    border: "1px solid rgba(255, 255, 255, 0.12)",
+    background: "linear-gradient(180deg, rgba(12, 22, 37, 0.92), rgba(8, 14, 23, 0.96))",
+    boxShadow: "0 30px 80px rgba(0, 0, 0, 0.38)",
+    padding: "28px",
+    marginTop: "24px"
+  },
+  subtitle: {
+    margin: "8px 0 0",
+    fontSize: "clamp(1.4rem, 2.4vw, 2rem)",
+    letterSpacing: "-0.03em"
+  },
+  hiddenFileInput: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    padding: 0,
+    margin: "-1px",
+    overflow: "hidden",
+    clip: "rect(0, 0, 0, 0)",
+    whiteSpace: "nowrap",
+    border: 0
+  },
+  importResult: {
+    marginTop: "18px"
+  },
+  scoreContainer: {
+    marginTop: "16px",
+    background: "#f7f4ee",
+    borderRadius: "16px",
+    padding: "16px",
+    overflowX: "auto"
   }
 };
 
