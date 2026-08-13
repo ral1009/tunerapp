@@ -11,6 +11,10 @@ export interface ScoreNote {
 export interface ScoreMeasure {
   index: number;
   notes: ScoreNote[];
+  // Present only when the time/key signature or tempo changes at this measure (or it's the first measure).
+  timeSignature?: string;
+  keySignature?: string;
+  tempoBpm?: number;
 }
 
 export interface ScoreAnnotation {

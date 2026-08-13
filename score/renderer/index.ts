@@ -82,9 +82,18 @@ export function renderScore(score: ScoreDocument, container: HTMLDivElement, opt
   const context = renderer.getContext();
   context.setFont("Arial", 10);
 
-  const [beatsPerMeasure, beatUnit] = score.timeSignature.split("/").map((part) => Number.parseInt(part, 10));
+  let currentKeySignature = score.keySignature;
+  let currentTimeSignature = score.timeSignature;
 
   score.measures.forEach((measure, measureIndex) => {
+    const timeSignatureChanged = measure.timeSignature !== undefined && measure.timeSignature !== currentTimeSignature;
+    if (measure.keySignature !== undefined) {
+      currentKeySignature = measure.keySignature;
+    }
+    if (measure.timeSignature !== undefined) {
+      currentTimeSignature = measure.timeSignature;
+    }
+
     const row = Math.floor(measureIndex / measuresPerRow);
     const col = measureIndex % measuresPerRow;
     const x = 20 + col * staveWidth;
@@ -93,8 +102,13 @@ export function renderScore(score: ScoreDocument, container: HTMLDivElement, opt
     const stave = new Stave(x, y, staveWidth);
     if (measureIndex === 0) {
       stave.addClef("treble");
-      stave.addKeySignature(score.keySignature);
-      stave.addTimeSignature(score.timeSignature);
+    }
+    if (col === 0) {
+      // Key signature is conventionally repeated at the start of every line.
+      stave.addKeySignature(currentKeySignature);
+    }
+    if (measureIndex === 0 || timeSignatureChanged) {
+      stave.addTimeSignature(currentTimeSignature);
     }
     stave.setContext(context).draw();
 
@@ -103,6 +117,9 @@ export function renderScore(score: ScoreDocument, container: HTMLDivElement, opt
       return;
     }
 
+    // Each measure's voice uses ITS OWN effective time signature — a piece that
+    // changes meter partway through must not format every measure against one global value.
+    const [beatsPerMeasure, beatUnit] = currentTimeSignature.split("/").map((part) => Number.parseInt(part, 10));
     const voice = new Voice({ numBeats: beatsPerMeasure || 4, beatValue: beatUnit || 4 });
     voice.setStrict(false);
     voice.addTickables(vexNotes);
