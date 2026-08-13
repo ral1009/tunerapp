@@ -179,7 +179,7 @@ async function main(): Promise<void> {
         lowCutHz: 80,
         highCutHz: 3500
       },
-      confidenceThreshold: 0.15,
+      confidenceThreshold: 0.4,
       smoothingWindowFrames: 5,
       expectedNoteWindowSemitones: 3
     });

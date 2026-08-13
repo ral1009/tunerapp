@@ -14,7 +14,8 @@ export interface ScoreMeasure {
   // Present only when the time/key signature or tempo changes at this measure (or it's the first measure).
   timeSignature?: string;
   keySignature?: string;
-  tempoBpm?: number;
+  // null means no tempo was ever specified in the source, as opposed to a real authored value.
+  tempoBpm?: number | null;
 }
 
 export interface ScoreAnnotation {
@@ -33,7 +34,8 @@ export interface PracticeHistoryEntry {
 export interface ScoreDocument {
   title: string;
   composer: string;
-  tempoBpm: number;
+  // null means no tempo was ever specified in the source, as opposed to a real authored value.
+  tempoBpm: number | null;
   keySignature: string;
   timeSignature: string;
   sourceType: SourceType;

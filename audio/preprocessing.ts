@@ -133,12 +133,12 @@ export function preprocessFrame(samples: Float32Array, config: PreprocessConfig 
   gate: NoiseGateResult;
   processed: Float32Array;
 } {
-  const gate = applyNoiseGate(samples, config.silenceRmsThreshold);
+  const filtered = applyBandPass(samples, config.sampleRate, config.lowCutHz, config.highCutHz);
+  const gate = applyNoiseGate(filtered, config.silenceRmsThreshold);
   if (!gate.passed) {
     return { gate, processed: new Float32Array(samples.length) };
   }
 
-  const filtered = applyBandPass(samples, config.sampleRate, config.lowCutHz, config.highCutHz);
   return {
     gate,
     processed: applyHannWindow(filtered)

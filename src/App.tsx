@@ -7,7 +7,7 @@ import {
   type StartCaptureOptions
 } from "../audio/captureModule";
 import { importPhotoToScore, type OmrImportResult } from "../score/omrImport";
-import { renderScore } from "../score/renderer";
+import { renderScore, type RenderedScoreHandle } from "../score/renderer";
 
 type ImportState = "idle" | "loading" | "success" | "error";
 
@@ -44,6 +44,14 @@ function formatCents(value: number | null): string {
   return `${rounded} cents`;
 }
 
+function formatTempo(value: number | null): string {
+  if (value === null) {
+    return "--";
+  }
+
+  return `${value} BPM`;
+}
+
 function statusLabel(status: LiveCaptureState["status"]): string {
   switch (status) {
     case "requesting":
@@ -74,6 +82,7 @@ export default function App(): ReactElement {
   const [importState, setImportState] = useState<ImportState>("idle");
   const [importResult, setImportResult] = useState<OmrImportResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
   const scoreContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -91,8 +100,32 @@ export default function App(): ReactElement {
       return;
     }
 
-    const handle = renderScore(importResult.score, scoreContainerRef.current);
-    return () => handle.unmount();
+    let cancelled = false;
+    let handle: RenderedScoreHandle | null = null;
+    setRenderError(null);
+
+    renderScore(importResult.xmlData, scoreContainerRef.current, {
+      titleOverride: importResult.score.title,
+      composerOverride: importResult.score.composer || undefined,
+      stripUnreliableBeaming: importResult.score.sourceType === "photo"
+    })
+      .then((resolvedHandle) => {
+        if (cancelled) {
+          resolvedHandle.unmount();
+          return;
+        }
+        handle = resolvedHandle;
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setRenderError(err instanceof Error ? err.message : "Unknown error while rendering the score.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      handle?.unmount();
+    };
   }, [importState, importResult]);
 
   async function handleStart(): Promise<void> {
@@ -117,6 +150,24 @@ export default function App(): ReactElement {
 
   async function handleStop(): Promise<void> {
     await controllerRef.current?.stop();
+  }
+
+  function handleDownloadMusicXml(): void {
+    if (!importResult) {
+      return;
+    }
+
+    const blob = new Blob([importResult.xmlData], { type: "application/vnd.recordare.musicxml+xml" });
+    const url = URL.createObjectURL(blob);
+    const fileNameSafeTitle = importResult.score.title.replace(/[^a-z0-9-_]+/gi, "_") || "sheet-music";
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${fileNameSafeTitle}.musicxml`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 
   async function handleSheetFileSelected(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -285,7 +336,7 @@ export default function App(): ReactElement {
                 </div>
                 <div>
                   <div style={styles.metaLabel}>Tempo</div>
-                  <div style={styles.metaValue}>{importResult.score.tempoBpm} BPM</div>
+                  <div style={styles.metaValue}>{formatTempo(importResult.score.tempoBpm)}</div>
                 </div>
                 <div>
                   <div style={styles.metaLabel}>Key / Time</div>
@@ -299,6 +350,14 @@ export default function App(): ReactElement {
                 {importResult.score.measures.reduce((total, measure) => total + measure.notes.length, 0)} notes detected across{" "}
                 {importResult.score.measures.length} measures.
               </p>
+
+              <div style={styles.buttonRow}>
+                <button type="button" style={styles.secondaryButton} onClick={handleDownloadMusicXml}>
+                  Download MusicXML
+                </button>
+              </div>
+
+              {renderError ? <div style={styles.errorBox}>Could not render this score: {renderError}</div> : null}
 
               <div ref={scoreContainerRef} style={styles.scoreContainer} />
             </div>

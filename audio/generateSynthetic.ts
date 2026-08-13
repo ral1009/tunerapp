@@ -17,13 +17,25 @@ interface ValidationSpec {
 	clips: SyntheticClipSpec[];
 }
 
-interface NoteDefinition {
+interface StaticNoteDefinition {
+	kind: "static";
 	note: string;
 	frequencyHz: number;
 	fileName: string;
 }
 
-const SAMPLE_RATE = 44_100;
+interface VibratoNoteDefinition {
+	kind: "vibrato";
+	note: string;
+	centerFrequencyHz: number;
+	vibratoRateHz: number;
+	vibratoDepthSemitones: number;
+	fileName: string;
+}
+
+type NoteDefinition = StaticNoteDefinition | VibratoNoteDefinition;
+
+const SAMPLE_RATE = 48_000;
 const FRAME_SIZE = 2048;
 const HOP_SIZE = 512;
 const CLIP_DURATION_MS = 2200;
@@ -34,15 +46,27 @@ const REST_WINDOWS_MS: Array<[number, number]> = [
 	[1800, 2200]
 ];
 
+// These are synthetic-only additions layered on top of the real recorded clips already
+// checked into ground-truth.json (open-*.wav / fingered-*.wav). They intentionally do NOT
+// reuse those filenames or note names, because this script's --overwrite regeneration is
+// destructive: reusing a real recording's filename would silently replace real mic audio
+// with a synthetic tone. Only entries listed here are ever (re)generated.
 const NOTE_DEFINITIONS: NoteDefinition[] = [
-	{ note: "G3", frequencyHz: 196.0, fileName: "open-g3.wav" },
-	{ note: "D4", frequencyHz: 293.66, fileName: "open-d4.wav" },
-	{ note: "A4", frequencyHz: 440.0, fileName: "open-a4.wav" },
-	{ note: "E5", frequencyHz: 659.25, fileName: "open-e5.wav" },
-	{ note: "B3", frequencyHz: 246.94, fileName: "fingered-b3.wav" },
-	{ note: "F#4", frequencyHz: 369.99, fileName: "fingered-fsharp4.wav" },
-	{ note: "C#5", frequencyHz: 554.37, fileName: "fingered-csharp5.wav" },
-	{ note: "G#5", frequencyHz: 830.61, fileName: "fingered-gsharp5.wav" }
+	// Highest note in the current dataset was G#5 (830.61Hz), far from the ~3.5kHz violin
+	// ceiling this app targets. G7 stresses detection near that upper bound without
+	// exceeding MAX_DETECTABLE_FREQUENCY_HZ.
+	{ kind: "static", note: "G7", frequencyHz: 3135.96, fileName: "synthetic-high-g7.wav" },
+	// All existing clips (real and synthetic) are static-envelope held tones. This adds
+	// frequency modulation typical of violin vibrato to check the pitch detector's median
+	// smoother stays on the correct note name through continuous pitch wobble.
+	{
+		kind: "vibrato",
+		note: "A4",
+		centerFrequencyHz: 440.0,
+		vibratoRateHz: 5.5,
+		vibratoDepthSemitones: 0.35,
+		fileName: "synthetic-vibrato-a4.wav"
+	}
 ];
 
 function parseArgs(argv: string[]): { overwrite: boolean } {
@@ -135,8 +159,54 @@ function generateClip(frequencyHz: number, fileName: string): Float32Array {
 	return samples;
 }
 
+function generateVibratoClip(
+	centerFrequencyHz: number,
+	vibratoRateHz: number,
+	vibratoDepthSemitones: number,
+	fileName: string
+): Float32Array {
+	const totalSamples = Math.round((CLIP_DURATION_MS / 1000) * SAMPLE_RATE);
+	const samples = new Float32Array(totalSamples);
+	const random = createSeededRandom(hashString(fileName));
+	const basePhase = random() * Math.PI * 2;
+
+	let phase = basePhase;
+	for (let index = 0; index < totalSamples; index += 1) {
+		const timeSeconds = index / SAMPLE_RATE;
+		const timeMs = timeSeconds * 1000;
+		const envelope = createEnvelope(timeMs);
+
+		// Vibrato only ramps in once the note has settled, like a real player easing into it.
+		const vibratoRampProgress = Math.min(1, Math.max(0, (timeMs - STEADY_START_MS - 150) / 250));
+		const vibratoSemitones = vibratoDepthSemitones * vibratoRampProgress * Math.sin(2 * Math.PI * vibratoRateHz * timeSeconds);
+		const instantaneousFrequencyHz = centerFrequencyHz * Math.pow(2, vibratoSemitones / 12);
+
+		phase += (2 * Math.PI * instantaneousFrequencyHz) / SAMPLE_RATE;
+
+		const harmonicBlend =
+			0.94 * Math.sin(phase) +
+			0.04 * Math.sin(phase * 2.001) +
+			0.015 * Math.sin(phase * 3.003) +
+			0.005 * Math.sin(phase * 4.004);
+		const attackNoise = timeMs < STEADY_START_MS + 50 ? (random() - 0.5) * 0.004 : 0;
+		const breathNoise = (random() - 0.5) * 0.0015;
+
+		samples[index] = envelope * harmonicBlend + attackNoise + breathNoise * envelope;
+	}
+
+	return samples;
+}
+
 function ensureDirectory(dirPath: string): void {
 	fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function loadExistingSpec(groundTruthPath: string): ValidationSpec | null {
+	if (!fs.existsSync(groundTruthPath)) {
+		return null;
+	}
+
+	return JSON.parse(fs.readFileSync(groundTruthPath, "utf8")) as ValidationSpec;
 }
 
 function main(): void {
@@ -148,40 +218,52 @@ function main(): void {
 	ensureDirectory(datasetDir);
 
 	const targetFiles = NOTE_DEFINITIONS.map((definition) => path.join(datasetDir, definition.fileName));
-	const existingFiles = [groundTruthPath, ...targetFiles].filter((filePath) => fs.existsSync(filePath));
-	if (existingFiles.length > 0 && !overwrite) {
-		throw new Error(`Refusing to overwrite existing files:\n${existingFiles.join("\n")}\nRe-run with --overwrite.`);
+	const existingTargetFiles = targetFiles.filter((filePath) => fs.existsSync(filePath));
+	if (existingTargetFiles.length > 0 && !overwrite) {
+		throw new Error(`Refusing to overwrite existing files:\n${existingTargetFiles.join("\n")}\nRe-run with --overwrite.`);
 	}
 
-	const clips: SyntheticClipSpec[] = [];
+	const newClips: SyntheticClipSpec[] = [];
 
 	for (const definition of NOTE_DEFINITIONS) {
 		const filePath = path.join(datasetDir, definition.fileName);
-		const samples = generateClip(definition.frequencyHz, definition.fileName);
+		const samples =
+			definition.kind === "static"
+				? generateClip(definition.frequencyHz, definition.fileName)
+				: generateVibratoClip(
+						definition.centerFrequencyHz,
+						definition.vibratoRateHz,
+						definition.vibratoDepthSemitones,
+						definition.fileName
+					);
 		const wavBuffer = encodeWavMono16(samples, SAMPLE_RATE);
 		fs.writeFileSync(filePath, wavBuffer);
 
-		clips.push({
+		newClips.push({
 			file: path.join("dataset", definition.fileName).split(path.sep).join("/"),
 			expectedNote: definition.note,
-			expectedFrequencyHz: definition.frequencyHz,
+			expectedFrequencyHz: definition.kind === "static" ? definition.frequencyHz : definition.centerFrequencyHz,
 			steadyStartMs: STEADY_START_MS,
 			steadyEndMs: STEADY_END_MS,
 			restWindowsMs: REST_WINDOWS_MS
 		});
 	}
 
+	const existingSpec = loadExistingSpec(groundTruthPath);
+	const newClipFiles = new Set(newClips.map((clip) => clip.file));
+	const preservedClips = existingSpec ? existingSpec.clips.filter((clip) => !newClipFiles.has(clip.file)) : [];
+
 	const spec: ValidationSpec = {
-		sampleRate: SAMPLE_RATE,
-		frameSize: FRAME_SIZE,
-		hopSize: HOP_SIZE,
-		clips
+		sampleRate: existingSpec?.sampleRate ?? SAMPLE_RATE,
+		frameSize: existingSpec?.frameSize ?? FRAME_SIZE,
+		hopSize: existingSpec?.hopSize ?? HOP_SIZE,
+		clips: [...preservedClips, ...newClips]
 	};
 
 	fs.writeFileSync(groundTruthPath, `${JSON.stringify(spec, null, 2)}\n`);
 
-	console.log(`Generated ${clips.length} synthetic clips in ${datasetDir}`);
-	console.log(`Wrote validation spec to ${groundTruthPath}`);
+	console.log(`Generated ${newClips.length} synthetic clips in ${datasetDir}`);
+	console.log(`Merged into validation spec at ${groundTruthPath} (${preservedClips.length} existing clips preserved)`);
 }
 
 main();

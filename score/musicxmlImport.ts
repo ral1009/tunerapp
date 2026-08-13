@@ -51,6 +51,160 @@ function directChild(element: Element, tagName: string): Element | null {
   return null;
 }
 
+interface CreditCandidate {
+  text: string;
+  fontSize: number | null;
+  isTitleType: boolean;
+  isComposerType: boolean;
+}
+
+// Boilerplate that shows up as page credits but is never the title: arranger/composer
+// attribution lines, publisher/rights text, and bare page numbers.
+const NON_TITLE_TEXT_PATTERNS = [
+  /arranged by/i,
+  /words and music by/i,
+  /music by/i,
+  /lyrics by/i,
+  /copyright/i,
+  /all rights reserved/i,
+  /^v\.?\s*s\.?$/i,
+  /^\d+$/
+];
+
+function normalizeForComparison(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Cheap Levenshtein distance for short strings (part names, garbled OCR fragments) — not
+// meant for long text, just to catch near-miss OCR reads like "ionlin1" vs "violin1".
+function editDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const table: number[][] = Array.from({ length: rows }, (_, i) => Array.from({ length: cols }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      table[i][j] = Math.min(table[i - 1][j] + 1, table[i][j - 1] + 1, table[i - 1][j - 1] + cost);
+    }
+  }
+
+  return table[rows - 1][cols - 1];
+}
+
+function collectPartNames(doc: Document): string[] {
+  const names: string[] = [];
+  for (const element of Array.from(doc.querySelectorAll("part-list score-part part-name, part-list score-part part-abbreviation"))) {
+    const text = element.textContent?.trim();
+    if (text) {
+      names.push(normalizeForComparison(text));
+    }
+  }
+  return names;
+}
+
+function collectIdentificationNames(doc: Document): string[] {
+  const names: string[] = [];
+  for (const element of Array.from(doc.querySelectorAll("identification > creator"))) {
+    const text = element.textContent?.trim();
+    if (text) {
+      names.push(normalizeForComparison(text));
+    }
+  }
+  return names;
+}
+
+function collectCreditCandidates(doc: Document): CreditCandidate[] {
+  const candidates: CreditCandidate[] = [];
+
+  for (const credit of Array.from(doc.querySelectorAll("credit"))) {
+    const wordsElements = Array.from(credit.querySelectorAll("credit-words"));
+    const text = wordsElements
+      .map((element) => element.textContent?.trim() ?? "")
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    if (!text) {
+      continue;
+    }
+
+    const fontSizes = wordsElements
+      .map((element) => Number.parseFloat(element.getAttribute("font-size") ?? ""))
+      .filter((value) => Number.isFinite(value));
+
+    const creditType = directChild(credit, "credit-type")?.textContent?.trim().toLowerCase() ?? null;
+
+    candidates.push({
+      text,
+      fontSize: fontSizes.length > 0 ? Math.max(...fontSizes) : null,
+      isTitleType: creditType === "title",
+      isComposerType: creditType === "composer" || creditType === "arranger" || creditType === "lyricist"
+    });
+  }
+
+  return candidates;
+}
+
+// Best-effort filter for "this credit block is obviously not the title/composer text" —
+// not a guarantee. HOMR's own OCR can misread the right region into something this can't
+// recover (e.g. "STRINGS" -> "Trings"); this only protects against picking the *wrong*
+// region (a part label, a rights-org credit, an arranger line) when it was read correctly.
+function isLikelyNonTitleCredit(text: string, excludedNames: string[]): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return true;
+  }
+  if (/^\(.*\)$/.test(trimmed)) {
+    return true;
+  }
+
+  const normalized = normalizeForComparison(trimmed);
+  if (normalized.length <= 3) {
+    return true;
+  }
+  if (NON_TITLE_TEXT_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return true;
+  }
+  if (excludedNames.some((name) => normalized === name || editDistance(normalized, name) <= Math.ceil(name.length * 0.4))) {
+    return true;
+  }
+
+  return false;
+}
+
+function resolveTitle(doc: Document, creditCandidates: CreditCandidate[], excludedNames: string[]): string {
+  const usable = creditCandidates.filter((candidate) => !candidate.isComposerType && !isLikelyNonTitleCredit(candidate.text, excludedNames));
+
+  const explicitTitle = usable.find((candidate) => candidate.isTitleType);
+  if (explicitTitle) {
+    return explicitTitle.text;
+  }
+
+  // "Biggest text" heuristic: the printed title is reliably the largest credit on the page.
+  const byFontSize = [...usable].sort((a, b) => (b.fontSize ?? 0) - (a.fontSize ?? 0));
+  if (byFontSize.length > 0) {
+    return byFontSize[0].text;
+  }
+
+  return (
+    doc.querySelector("work > work-title")?.textContent?.trim() ||
+    doc.querySelector("movement-title")?.textContent?.trim() ||
+    "Untitled"
+  );
+}
+
+function resolveComposer(doc: Document, creditCandidates: CreditCandidate[], excludedNames: string[]): string {
+  const explicit = doc.querySelector('identification > creator[type="composer"]')?.textContent?.trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const composerCredit = creditCandidates.find(
+    (candidate) => candidate.isComposerType && !isLikelyNonTitleCredit(candidate.text, excludedNames)
+  );
+  return composerCredit?.text ?? "";
+}
+
 export async function importMusicXmlToScore(xml: string): Promise<ScoreDocument> {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
 
@@ -63,16 +217,15 @@ export async function importMusicXmlToScore(xml: string): Promise<ScoreDocument>
     throw new Error("No playable part was found in the MusicXML document.");
   }
 
-  const title =
-    doc.querySelector("work > work-title")?.textContent?.trim() ||
-    doc.querySelector("movement-title")?.textContent?.trim() ||
-    "Untitled";
-  const composer = doc.querySelector('identification > creator[type="composer"]')?.textContent?.trim() ?? "";
+  const creditCandidates = collectCreditCandidates(doc);
+  const excludedNames = [...collectPartNames(doc), ...collectIdentificationNames(doc)];
+  const title = resolveTitle(doc, creditCandidates, excludedNames);
+  const composer = resolveComposer(doc, creditCandidates, excludedNames);
 
   let divisions = 1;
   let keySignature = "C";
   let timeSignature = "4/4";
-  let tempoBpm = 120;
+  let tempoBpm: number | null = null;
 
   const measures: ScoreMeasure[] = Array.from(partElement.querySelectorAll("measure")).map((measureElement, measureIndex) => {
     const notes: ScoreNote[] = [];

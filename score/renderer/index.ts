@@ -1,137 +1,126 @@
-import { Accidental, Beam, Formatter, Renderer, Stave, StaveNote, Voice } from "vexflow";
-import type { ScoreDocument, ScoreMeasure } from "../schema";
+import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
+import { applyAutomaticBeaming } from "./beamGrouping";
 
 export interface RenderedScoreHandle {
   unmount(): void;
 }
 
 export interface ScoreRenderOptions {
-  measuresPerRow?: number;
-  staveWidth?: number;
+  drawTitle?: boolean;
+  drawComposer?: boolean;
+  // Title/composer resolved by importMusicXmlToScore's credit-ranking heuristic. When set,
+  // these override whatever OSMD would otherwise pick from the same (often unreliable, for
+  // HOMR-sourced XML) <work-title>/<credit> data, so the rendered score and the app's
+  // metadata card never disagree.
+  titleOverride?: string;
+  composerOverride?: string;
+  // Strips HOMR's <stem> hints and replaces any <beam> data with our own beat-aware
+  // computation (see beamGrouping.ts) — OSMD's own automatic beaming isn't reliable enough
+  // on real HOMR output (confirmed: it fails outright on repeating pitch patterns). Only
+  // meaningful for OMR-sourced scores — see renderScore.
+  stripUnreliableBeaming?: boolean;
 }
 
-const DURATION_TABLE: Array<[number, string]> = [
-  [4, "w"],
-  [3, "hd"],
-  [2, "h"],
-  [1.5, "qd"],
-  [1, "q"],
-  [0.75, "8d"],
-  [0.5, "8"],
-  [0.375, "16d"],
-  [0.25, "16"],
-  [0.125, "32"]
-];
-
-function beatsToVexDuration(beats: number): string {
-  if (!Number.isFinite(beats) || beats <= 0) {
-    return "q";
+// Rewrites <work-title> and <identification><creator type="composer"> (creating either if
+// absent) so OSMD's own title/composer-drawing logic picks up the already-resolved values
+// instead of re-deriving its own from the same ambiguous page credits.
+function applyMetadataOverrides(xml: string, title?: string, composer?: string): string {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.querySelector("parsererror")) {
+    return xml;
   }
 
-  let closest = DURATION_TABLE[0];
-  let closestDiff = Math.abs(beats - closest[0]);
-  for (const entry of DURATION_TABLE) {
-    const diff = Math.abs(beats - entry[0]);
-    if (diff < closestDiff) {
-      closest = entry;
-      closestDiff = diff;
+  if (title) {
+    let work = doc.querySelector("work");
+    if (!work) {
+      work = doc.createElement("work");
+      doc.documentElement.insertBefore(work, doc.documentElement.firstChild);
     }
+
+    let workTitle = work.querySelector("work-title");
+    if (!workTitle) {
+      workTitle = doc.createElement("work-title");
+      work.appendChild(workTitle);
+    }
+    workTitle.textContent = title;
   }
 
-  return closest[1];
+  if (composer) {
+    let identification = doc.querySelector("identification");
+    if (!identification) {
+      identification = doc.createElement("identification");
+      doc.documentElement.insertBefore(identification, doc.querySelector("part-list"));
+    }
+
+    let composerCreator = identification.querySelector('creator[type="composer"]');
+    if (!composerCreator) {
+      composerCreator = doc.createElement("creator");
+      composerCreator.setAttribute("type", "composer");
+      identification.appendChild(composerCreator);
+    }
+    composerCreator.textContent = composer;
+  }
+
+  return new XMLSerializer().serializeToString(doc);
 }
 
-// Each ScoreNote becomes its own StaveNote — simultaneous notes (chords) are not
-// grouped, since the app targets a single melodic line (violin) where chords don't occur.
-function buildVexNotes(measure: ScoreMeasure): StaveNote[] {
-  const notes: StaveNote[] = [];
-
-  for (const scoreNote of measure.notes) {
-    const parsed = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(scoreNote.pitch);
-    if (!parsed) {
-      continue;
-    }
-
-    const [, step, accidental, octave] = parsed;
-    const key = `${step.toLowerCase()}${accidental}/${octave}`;
-    const duration = beatsToVexDuration(scoreNote.durationBeats);
-
-    const staveNote = new StaveNote({ keys: [key], duration });
-    if (accidental) {
-      staveNote.addModifier(new Accidental(accidental), 0);
-    }
-
-    notes.push(staveNote);
+// Removes <stem> from every <note> so setWantedStemDirectionByXml: false (set below) has
+// nothing stale to ignore — OSMD then computes every stem direction automatically, which is
+// beam-group-aware and enforces one consistent direction per beam once <beam> data (see
+// applyAutomaticBeaming) correctly groups notes. Beam data itself is handled separately since
+// OSMD's own automatic beaming isn't trustworthy enough to just fill gaps around — see
+// beamGrouping.ts for why.
+function stripStemHints(xml: string): string {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.querySelector("parsererror")) {
+    return xml;
   }
 
-  return notes;
+  for (const element of Array.from(doc.querySelectorAll("note > stem"))) {
+    element.remove();
+  }
+
+  return new XMLSerializer().serializeToString(doc);
 }
 
-export function renderScore(score: ScoreDocument, container: HTMLDivElement, options: ScoreRenderOptions = {}): RenderedScoreHandle {
+// Renders directly from the raw MusicXML text via OpenSheetMusicDisplay (OSMD) rather than
+// through the app's internal ScoreDocument reduction. ScoreDocument drops rests, ties, slurs,
+// articulations, and dynamics entirely (it only tracks pitched notes for score-following), so
+// building notation from it can never be fidelity-complete regardless of which layout engine
+// draws it. OSMD parses the source XML itself, so all of that survives.
+export async function renderScore(
+  xmlData: string,
+  container: HTMLDivElement,
+  options: ScoreRenderOptions = {}
+): Promise<RenderedScoreHandle> {
   container.innerHTML = "";
 
-  const measuresPerRow = options.measuresPerRow ?? 4;
-  const staveWidth = options.staveWidth ?? 260;
-  const measureCount = score.measures.length || 1;
-  const columns = Math.min(measuresPerRow, measureCount);
-  const rows = Math.ceil(measureCount / measuresPerRow);
-  const rowHeight = 150;
+  const hasOverride = Boolean(options.titleOverride || options.composerOverride || options.stripUnreliableBeaming);
 
-  const renderer = new Renderer(container, Renderer.Backends.SVG);
-  renderer.resize(columns * staveWidth + 40, rows * rowHeight + 40);
-  const context = renderer.getContext();
-  context.setFont("Arial", 10);
-
-  let currentKeySignature = score.keySignature;
-  let currentTimeSignature = score.timeSignature;
-
-  score.measures.forEach((measure, measureIndex) => {
-    const timeSignatureChanged = measure.timeSignature !== undefined && measure.timeSignature !== currentTimeSignature;
-    if (measure.keySignature !== undefined) {
-      currentKeySignature = measure.keySignature;
-    }
-    if (measure.timeSignature !== undefined) {
-      currentTimeSignature = measure.timeSignature;
-    }
-
-    const row = Math.floor(measureIndex / measuresPerRow);
-    const col = measureIndex % measuresPerRow;
-    const x = 20 + col * staveWidth;
-    const y = 20 + row * rowHeight;
-
-    const stave = new Stave(x, y, staveWidth);
-    if (measureIndex === 0) {
-      stave.addClef("treble");
-    }
-    if (col === 0) {
-      // Key signature is conventionally repeated at the start of every line.
-      stave.addKeySignature(currentKeySignature);
-    }
-    if (measureIndex === 0 || timeSignatureChanged) {
-      stave.addTimeSignature(currentTimeSignature);
-    }
-    stave.setContext(context).draw();
-
-    const vexNotes = buildVexNotes(measure);
-    if (vexNotes.length === 0) {
-      return;
-    }
-
-    // Each measure's voice uses ITS OWN effective time signature — a piece that
-    // changes meter partway through must not format every measure against one global value.
-    const [beatsPerMeasure, beatUnit] = currentTimeSignature.split("/").map((part) => Number.parseInt(part, 10));
-    const voice = new Voice({ numBeats: beatsPerMeasure || 4, beatValue: beatUnit || 4 });
-    voice.setStrict(false);
-    voice.addTickables(vexNotes);
-
-    new Formatter().joinVoices([voice]).format([voice], staveWidth - 40);
-    voice.draw(context, stave);
-
-    Beam.generateBeams(vexNotes).forEach((beam) => beam.setContext(context).draw());
+  const osmd = new OpenSheetMusicDisplay(container, {
+    autoResize: true,
+    backend: "svg",
+    autoBeam: true,
+    setWantedStemDirectionByXml: false,
+    drawTitle: options.drawTitle ?? true,
+    drawComposer: options.drawComposer ?? true,
+    onXMLRead: hasOverride
+      ? (xml: string) => {
+          const withMetadata = applyMetadataOverrides(xml, options.titleOverride, options.composerOverride);
+          if (!options.stripUnreliableBeaming) {
+            return withMetadata;
+          }
+          return applyAutomaticBeaming(stripStemHints(withMetadata));
+        }
+      : undefined
   });
+
+  await osmd.load(xmlData);
+  osmd.render();
 
   return {
     unmount() {
+      osmd.clear();
       container.innerHTML = "";
     }
   };

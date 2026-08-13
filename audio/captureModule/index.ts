@@ -82,6 +82,7 @@ const DEFAULT_CONFIDENCE_THRESHOLD = 0.6;
 const DEFAULT_SMOOTHING_WINDOW_FRAMES = 5;
 const DEFAULT_EXPECTED_NOTE_WINDOW_SEMITONES = 3;
 const CALIBRATION_WINDOW_MS = 500;
+const WATCHDOG_LIVENESS_TIMEOUT_MS = 4000;
 const MAX_GAIN_SCALAR = 8;
 const WORKLET_NAME = "tunerapp-pcm-frame-processor";
 
@@ -186,6 +187,16 @@ function buildWorkletSource(): string {
   `;
 }
 
+function calculateMedian(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
 function createDefaultState(config: CaptureConfig): LiveCaptureState {
   return {
     status: "idle",
@@ -242,8 +253,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   private beforeUnloadListener: (() => void) | null = null;
   private calibrationTimer: ReturnType<typeof setTimeout> | null = null;
   private calibrationStartedAtMs = 0;
-  private calibrationNoiseRmsSum = 0;
-  private calibrationFrameCount = 0;
+  private calibrationRmsSamples: number[] = [];
   private calibrationPeakSignalRms = 0;
   private calibratedSilenceRmsThreshold = DEFAULT_SILENCE_RMS_THRESHOLD;
   private detectorSilenceRmsThreshold = DEFAULT_SILENCE_RMS_THRESHOLD;
@@ -306,8 +316,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     this.calibratedSilenceRmsThreshold = this.config.silenceRmsThreshold;
     this.detectorSilenceRmsThreshold = this.config.silenceRmsThreshold;
     this.gainScalar = 1;
-    this.calibrationNoiseRmsSum = 0;
-    this.calibrationFrameCount = 0;
+    this.calibrationRmsSamples = [];
     this.calibrationPeakSignalRms = 0;
     this.clearWatchdogTimer();
 
@@ -390,6 +399,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     }
 
     this.isPaused = true;
+    this.clearWatchdogTimer();
     await this.audioContext.suspend();
     this.emitState({ status: "suspended" });
     return this.state;
@@ -454,6 +464,19 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       clearTimeout(this.watchdogTimer);
       this.watchdogTimer = null;
     }
+  }
+
+  private armWatchdogTimer(): void {
+    this.clearWatchdogTimer();
+
+    if (this.state.status !== "listening" && this.state.status !== "calibrating") {
+      return;
+    }
+
+    this.watchdogTimer = setTimeout(() => {
+      this.watchdogTimer = null;
+      void this.restartAudioPipeline();
+    }, WATCHDOG_LIVENESS_TIMEOUT_MS);
   }
 
   private async restartAudioPipeline(): Promise<void> {
@@ -528,12 +551,11 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   }
 
   private updateCalibrationMetrics(rms: number): void {
-    this.calibrationNoiseRmsSum += rms;
-    this.calibrationFrameCount += 1;
+    this.calibrationRmsSamples.push(rms);
     this.calibrationPeakSignalRms = Math.max(this.calibrationPeakSignalRms, rms);
 
-    const meanNoiseRms = this.calibrationFrameCount > 0 ? this.calibrationNoiseRmsSum / this.calibrationFrameCount : 0;
-    const rawThreshold = Math.max(DEFAULT_SILENCE_RMS_THRESHOLD, meanNoiseRms * 1.5);
+    const medianNoiseRms = calculateMedian(this.calibrationRmsSamples);
+    const rawThreshold = Math.max(DEFAULT_SILENCE_RMS_THRESHOLD, medianNoiseRms * 1.5);
     const gainScalar = Math.max(1, Math.min(MAX_GAIN_SCALAR, 0.05 / Math.max(0.002, this.calibrationPeakSignalRms || rms)));
 
     this.calibratedSilenceRmsThreshold = rawThreshold;
@@ -570,9 +592,9 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     this.clearCalibrationTimer();
 
     try {
-      const meanNoiseRms = this.calibrationFrameCount > 0 ? this.calibrationNoiseRmsSum / this.calibrationFrameCount : 0;
-      const rawThreshold = Math.max(DEFAULT_SILENCE_RMS_THRESHOLD, meanNoiseRms * 1.5);
-      const gainScalar = Math.max(1, Math.min(MAX_GAIN_SCALAR, 0.05 / Math.max(0.002, this.calibrationPeakSignalRms || meanNoiseRms || 0)));
+      const medianNoiseRms = calculateMedian(this.calibrationRmsSamples);
+      const rawThreshold = Math.max(DEFAULT_SILENCE_RMS_THRESHOLD, medianNoiseRms * 1.5);
+      const gainScalar = Math.max(1, Math.min(MAX_GAIN_SCALAR, 0.05 / Math.max(0.002, this.calibrationPeakSignalRms || medianNoiseRms || 0)));
       const detectorThreshold = rawThreshold * gainScalar;
 
       this.calibratedSilenceRmsThreshold = rawThreshold;
@@ -655,17 +677,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     this.totalSamplesReceived += chunk.length;
 
     const rawRms = calculateRms(chunk);
-
-    if (this.state.status === "listening" && rawRms < 0.002) {
-      if (!this.watchdogTimer) {
-        this.watchdogTimer = setTimeout(() => {
-          this.watchdogTimer = null;
-          void this.restartAudioPipeline();
-        }, 2500);
-      }
-    } else {
-      this.clearWatchdogTimer();
-    }
+    this.armWatchdogTimer();
 
     if (this.isCalibrating) {
       this.updateCalibrationMetrics(rawRms);

@@ -5,6 +5,7 @@ import { importMusicXmlToScore } from "./musicxmlImport";
 export interface OmrImportResult {
   score: ScoreDocument;
   transientBoundingBoxes: Array<{ noteId: string; x: number; y: number; width: number; height: number }>;
+  xmlData: string;
 }
 
 interface ParseSheetResponse {
@@ -45,5 +46,5 @@ export async function importPhotoToScore(imageBytes: Uint8Array): Promise<OmrImp
 
   const score: ScoreDocument = { ...(await importMusicXmlToScore(body.xmlData)), sourceType: "photo" };
 
-  return { score, transientBoundingBoxes: [] };
+  return { score, transientBoundingBoxes: [], xmlData: body.xmlData };
 }
