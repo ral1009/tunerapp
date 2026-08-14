@@ -1,8 +1,12 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { applyAutomaticBeaming } from "./beamGrouping";
+import { createScoreCursor, type ScoreCursor } from "./scoreCursor";
+
+export type { CursorNoteInfo, ScoreCursor } from "./scoreCursor";
 
 export interface RenderedScoreHandle {
   unmount(): void;
+  cursor: ScoreCursor;
 }
 
 export interface ScoreRenderOptions {
@@ -118,7 +122,11 @@ export async function renderScore(
   await osmd.load(xmlData);
   osmd.render();
 
+  const cursor = createScoreCursor(osmd.cursor);
+  cursor.hide();
+
   return {
+    cursor,
     unmount() {
       osmd.clear();
       container.innerHTML = "";

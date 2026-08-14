@@ -1,3 +1,5 @@
+import { realFftMagnitudes } from "./fft";
+
 export interface OnsetDetectorConfig {
   sampleRate: number;
   frameSize: number;
@@ -14,24 +16,6 @@ export const DEFAULT_ONSET_CONFIG: OnsetDetectorConfig = {
   minOnsetIntervalMs: 70
 };
 
-function fftMagnitudes(frame: Float32Array): Float32Array {
-  const bins = Math.floor(frame.length / 2);
-  const magnitudes = new Float32Array(bins);
-
-  for (let k = 0; k < bins; k += 1) {
-    let real = 0;
-    let imag = 0;
-    for (let n = 0; n < frame.length; n += 1) {
-      const angle = (-2 * Math.PI * k * n) / frame.length;
-      real += frame[n] * Math.cos(angle);
-      imag += frame[n] * Math.sin(angle);
-    }
-    magnitudes[k] = Math.hypot(real, imag);
-  }
-
-  return magnitudes;
-}
-
 export class OnsetDetector {
   private readonly config: OnsetDetectorConfig;
   private previousMagnitudes: Float32Array | null = null;
@@ -42,7 +26,7 @@ export class OnsetDetector {
   }
 
   detect(frame: Float32Array, timestampMs: number): { onset: boolean; flux: number } {
-    const magnitudes = fftMagnitudes(frame);
+    const magnitudes = realFftMagnitudes(frame);
     if (!this.previousMagnitudes) {
       this.previousMagnitudes = magnitudes;
       return { onset: false, flux: 0 };

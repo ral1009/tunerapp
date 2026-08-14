@@ -2,6 +2,7 @@
 
 import { PitchDetector, type PitchDetectionResult } from "../pitchDetector";
 import { calculateRms } from "../preprocessing";
+import { OnsetDetector } from "../onsetDetector";
 
 export interface PcmFrame {
   samples: Float32Array;
@@ -36,6 +37,9 @@ export interface LivePitchFrame {
   confidence: number;
   rms: number;
   isSilent: boolean;
+  // True only on the frame where a new onset was just detected (edge-triggered, already
+  // debounced by OnsetDetector's minOnsetIntervalMs).
+  onsetDetected: boolean;
 }
 
 export interface CaptureErrorInfo {
@@ -51,6 +55,8 @@ export interface LiveCaptureState extends LivePitchFrame {
   silenceRmsThreshold: number;
   gainScalar: number;
   error: CaptureErrorInfo | null;
+  activeDeviceId: string | null;
+  activeDeviceLabel: string | null;
 }
 
 export interface LiveCaptureCallbacks {
@@ -65,6 +71,11 @@ export interface MicrophoneCaptureController {
   stop(): Promise<LiveCaptureState>;
   getState(): LiveCaptureState;
   subscribe(listener: (state: LiveCaptureState) => void): () => void;
+  listInputDevices(): Promise<MediaDeviceInfo[]>;
+  // Sets (or clears with null) the expected pitch used to narrow live pitch detection, via
+  // PitchDetector's existing expectedFrequencyHz mechanism. Safe to call at any time; takes
+  // effect starting with the next processed frame.
+  setExpectedFrequencyHz(frequencyHz: number | null): void;
 }
 
 export interface AudioCaptureModule {
@@ -83,8 +94,21 @@ const DEFAULT_SMOOTHING_WINDOW_FRAMES = 5;
 const DEFAULT_EXPECTED_NOTE_WINDOW_SEMITONES = 3;
 const CALIBRATION_WINDOW_MS = 500;
 const WATCHDOG_LIVENESS_TIMEOUT_MS = 4000;
-const MAX_GAIN_SCALAR = 8;
+// The noise gate is intentionally *relative* to each device's own measured noise floor rather than an
+// absolute constant: mic hardware sensitivity varies by orders of magnitude across devices (a quiet laptop
+// mic can read ~0.0001 RMS while playing loudly, versus ~0.05+ on a phone), and a fixed absolute floor here
+// previously swallowed real signal on quiet devices entirely (it always dominated the noise-relative term).
+const CALIBRATION_GATE_RATIO = 1.5;
+// Last-resort floor only for the degenerate case of a literal ~0 noise reading; must stay far below any
+// legitimate device's real noise floor so the relative term above always drives the actual threshold.
+const CALIBRATION_GATE_FLOOR_RMS = 0.00002;
+const CALIBRATION_GAIN_TARGET_RMS = 0.05;
+const CALIBRATION_GAIN_EPSILON_RMS = 0.0005;
+const MAX_GAIN_SCALAR = 32;
 const WORKLET_NAME = "tunerapp-pcm-frame-processor";
+// Fixed, independent of the (larger) pitch-analysis frame size -- keeps the onset detector's
+// per-hop FFT cheap regardless of how large analysisFrameSize grows for pitch detection.
+const ONSET_ANALYSIS_FRAME_SIZE = 1024;
 
 type WorkletFrameMessage = {
   samples: Float32Array;
@@ -209,11 +233,14 @@ function createDefaultState(config: CaptureConfig): LiveCaptureState {
     confidence: 0,
     rms: 0,
     isSilent: true,
+    onsetDetected: false,
     frameSize: config.frameSize,
     hopSize: config.hopSize,
     silenceRmsThreshold: config.silenceRmsThreshold,
     gainScalar: 1,
-    error: null
+    error: null,
+    activeDeviceId: null,
+    activeDeviceLabel: null
   };
 }
 
@@ -239,6 +266,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   private workletNode: AudioWorkletNode | null = null;
   private workletModuleUrl: string | null = null;
   private detector: PitchDetector | null = null;
+  private onsetDetector: OnsetDetector | null = null;
+  private expectedFrequencyHz: number | null = null;
   private frameBuffer = new Float32Array(DEFAULT_FRAME_SIZE);
   private frameBufferLength = 0;
   private nextFrameStartSampleIndex = 0;
@@ -254,7 +283,6 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   private calibrationTimer: ReturnType<typeof setTimeout> | null = null;
   private calibrationStartedAtMs = 0;
   private calibrationRmsSamples: number[] = [];
-  private calibrationPeakSignalRms = 0;
   private calibratedSilenceRmsThreshold = DEFAULT_SILENCE_RMS_THRESHOLD;
   private detectorSilenceRmsThreshold = DEFAULT_SILENCE_RMS_THRESHOLD;
   private gainScalar = 1;
@@ -269,12 +297,25 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     return this.state;
   }
 
+  setExpectedFrequencyHz(frequencyHz: number | null): void {
+    this.expectedFrequencyHz = frequencyHz && frequencyHz > 0 ? frequencyHz : null;
+  }
+
   subscribe(listener: (state: LiveCaptureState) => void): () => void {
     this.stateListeners.add(listener);
     listener(this.state);
     return () => {
       this.stateListeners.delete(listener);
     };
+  }
+
+  async listInputDevices(): Promise<MediaDeviceInfo[]> {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.enumerateDevices) {
+      return [];
+    }
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter((device) => device.kind === "audioinput");
   }
 
   async start(options: StartCaptureOptions = {}, callbacks: LiveCaptureCallbacks = {}): Promise<LiveCaptureState> {
@@ -317,7 +358,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     this.detectorSilenceRmsThreshold = this.config.silenceRmsThreshold;
     this.gainScalar = 1;
     this.calibrationRmsSamples = [];
-    this.calibrationPeakSignalRms = 0;
+    this.expectedFrequencyHz = null;
     this.clearWatchdogTimer();
 
     const audioContextConstructor = getAudioContextConstructor();
@@ -352,6 +393,11 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       const audioContext = new audioContextConstructor();
       this.audioContext = audioContext;
       this.mediaStream = mediaStream;
+
+      const activeTrackSettings = mediaStream.getAudioTracks()[0]?.getSettings();
+      const activeDeviceId = activeTrackSettings?.deviceId ?? null;
+      const activeDeviceLabel = mediaStream.getAudioTracks()[0]?.label || null;
+      this.emitState({ activeDeviceId, activeDeviceLabel });
 
       this.mediaSource = audioContext.createMediaStreamSource(mediaStream);
       this.workletModuleUrl = this.installWorkletModule();
@@ -550,13 +596,32 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     });
   }
 
+  private createOnsetDetector(sampleRate: number): OnsetDetector {
+    return new OnsetDetector({
+      sampleRate,
+      frameSize: ONSET_ANALYSIS_FRAME_SIZE,
+      hopSize: this.config.hopSize
+    });
+  }
+
+  // Threshold is deliberately relative to *this device's* measured noise floor rather than an absolute
+  // constant, so quiet and sensitive microphones alike gate on "clearly louder than my own ambient noise"
+  // instead of "louder than a fixed value tuned for some other device". This is what makes calibration
+  // converge to equivalent behavior across wildly different hardware.
+  private computeCalibration(): { rawThreshold: number; gainScalar: number } {
+    const medianNoiseRms = calculateMedian(this.calibrationRmsSamples);
+    const rawThreshold = Math.max(CALIBRATION_GATE_FLOOR_RMS, medianNoiseRms * CALIBRATION_GATE_RATIO);
+    const gainScalar = Math.max(
+      1,
+      Math.min(MAX_GAIN_SCALAR, CALIBRATION_GAIN_TARGET_RMS / Math.max(CALIBRATION_GAIN_EPSILON_RMS, medianNoiseRms))
+    );
+    return { rawThreshold, gainScalar };
+  }
+
   private updateCalibrationMetrics(rms: number): void {
     this.calibrationRmsSamples.push(rms);
-    this.calibrationPeakSignalRms = Math.max(this.calibrationPeakSignalRms, rms);
 
-    const medianNoiseRms = calculateMedian(this.calibrationRmsSamples);
-    const rawThreshold = Math.max(DEFAULT_SILENCE_RMS_THRESHOLD, medianNoiseRms * 1.5);
-    const gainScalar = Math.max(1, Math.min(MAX_GAIN_SCALAR, 0.05 / Math.max(0.002, this.calibrationPeakSignalRms || rms)));
+    const { rawThreshold, gainScalar } = this.computeCalibration();
 
     this.calibratedSilenceRmsThreshold = rawThreshold;
     this.detectorSilenceRmsThreshold = rawThreshold * gainScalar;
@@ -592,9 +657,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     this.clearCalibrationTimer();
 
     try {
-      const medianNoiseRms = calculateMedian(this.calibrationRmsSamples);
-      const rawThreshold = Math.max(DEFAULT_SILENCE_RMS_THRESHOLD, medianNoiseRms * 1.5);
-      const gainScalar = Math.max(1, Math.min(MAX_GAIN_SCALAR, 0.05 / Math.max(0.002, this.calibrationPeakSignalRms || medianNoiseRms || 0)));
+      const { rawThreshold, gainScalar } = this.computeCalibration();
       const detectorThreshold = rawThreshold * gainScalar;
 
       this.calibratedSilenceRmsThreshold = rawThreshold;
@@ -605,6 +668,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
         silenceRmsThreshold: rawThreshold
       };
       this.detector = this.createDetector(sampleRate, detectorThreshold);
+      this.onsetDetector = this.createOnsetDetector(sampleRate);
       this.isCalibrating = false;
 
       this.emitState({
@@ -623,7 +687,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   }
 
   private processBufferedFrames(sampleRate: number): void {
-    if (!this.detector || this.isStopping) {
+    if (!this.detector || !this.onsetDetector || this.isStopping) {
       return;
     }
 
@@ -634,8 +698,19 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       const rawSamples = frame.slice();
       const rawRms = calculateRms(rawSamples);
       const timestampMs = (this.nextFrameStartSampleIndex / sampleRate) * 1000;
-      const detection = this.detector.detect({ samples: this.applyGain(rawSamples) });
-      const liveFrame = this.toLiveFrame(detection, sampleRate, timestampMs, rawSamples, rawRms);
+
+      // Onset detection runs on a small, fixed-size tail window (independent of the larger
+      // pitch-analysis frame) and must read the *ungained* signal, before applyGain below
+      // mutates rawSamples in place -- keeps onset flux behavior independent of the
+      // per-device software gain scalar.
+      const onsetWindow = rawSamples.subarray(rawSamples.length - ONSET_ANALYSIS_FRAME_SIZE);
+      const onsetResult = this.onsetDetector.detect(onsetWindow, timestampMs);
+
+      const detection = this.detector.detect({
+        samples: this.applyGain(rawSamples),
+        expectedFrequencyHz: this.expectedFrequencyHz ?? undefined
+      });
+      const liveFrame = this.toLiveFrame(detection, sampleRate, timestampMs, rawSamples, rawRms, onsetResult.onset);
 
       this.emitState({
         status: this.audioContext?.state === "suspended" ? "suspended" : "listening",
@@ -648,6 +723,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
         confidence: liveFrame.confidence,
         rms: liveFrame.rms,
         isSilent: liveFrame.isSilent,
+        onsetDetected: liveFrame.onsetDetected,
         silenceRmsThreshold: this.calibratedSilenceRmsThreshold,
         gainScalar: this.gainScalar,
         error: null
@@ -714,7 +790,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     sampleRate: number,
     timestampMs: number,
     samples: Float32Array,
-    rawRms: number
+    rawRms: number,
+    onsetDetected: boolean
   ): LivePitchFrame {
     const isSilent = detection.reason === "silence" || rawRms < this.calibratedSilenceRmsThreshold;
 
@@ -728,7 +805,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
         centsOff: null,
         confidence: detection.confidence,
         rms: rawRms,
-        isSilent
+        isSilent,
+        onsetDetected
       };
     }
 
@@ -742,7 +820,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       centsOff: noteInfo.centsOff,
       confidence: detection.confidence,
       rms: rawRms,
-      isSilent
+      isSilent,
+      onsetDetected
     };
   }
 
@@ -813,6 +892,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     }
 
     this.detector = null;
+    this.onsetDetector = null;
     this.frameBufferLength = 0;
     this.totalSamplesReceived = 0;
     this.nextFrameStartSampleIndex = 0;

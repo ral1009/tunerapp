@@ -7,7 +7,9 @@ import {
   type StartCaptureOptions
 } from "../audio/captureModule";
 import { importPhotoToScore, type OmrImportResult } from "../score/omrImport";
-import { renderScore, type RenderedScoreHandle } from "../score/renderer";
+import { renderScore, type RenderedScoreHandle, type ScoreCursor } from "../score/renderer";
+import { ScoreFollower, DEFAULT_SCORE_FOLLOWER_CONFIG, type ScoreFollowerState } from "../practice/cursor";
+import { summarizePracticeSession } from "../practice/reviewSummary";
 
 type ImportState = "idle" | "loading" | "success" | "error";
 
@@ -78,6 +80,8 @@ export default function App(): ReactElement {
 
   const [captureState, setCaptureState] = useState<LiveCaptureState>(() => controllerRef.current!.getState());
   const [isStarting, setIsStarting] = useState(false);
+  const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
 
   const [importState, setImportState] = useState<ImportState>("idle");
   const [importResult, setImportResult] = useState<OmrImportResult | null>(null);
@@ -85,15 +89,28 @@ export default function App(): ReactElement {
   const [renderError, setRenderError] = useState<string | null>(null);
   const scoreContainerRef = useRef<HTMLDivElement | null>(null);
 
+  const followerRef = useRef<ScoreFollower | null>(null);
+  const [scoreCursor, setScoreCursor] = useState<ScoreCursor | null>(null);
+  const [followerState, setFollowerState] = useState<ScoreFollowerState | null>(null);
+  const [practiceMode, setPracticeMode] = useState<"off" | "active">("off");
+
   useEffect(() => {
     const controller = controllerRef.current!;
-    const unsubscribe = controller.subscribe(setCaptureState);
+    const unsubscribe = controller.subscribe((state) => {
+      setCaptureState(state);
+      followerRef.current?.onLiveFrame(state);
+    });
+    void controller.listInputDevices().then(setInputDevices);
 
     return () => {
       unsubscribe();
       void controller.stop();
     };
   }, []);
+
+  function handleDeviceChange(event: ChangeEvent<HTMLSelectElement>): void {
+    setSelectedDeviceId(event.target.value);
+  }
 
   useEffect(() => {
     if (importState !== "success" || !importResult || !scoreContainerRef.current) {
@@ -115,6 +132,7 @@ export default function App(): ReactElement {
           return;
         }
         handle = resolvedHandle;
+        setScoreCursor(resolvedHandle.cursor);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -125,8 +143,23 @@ export default function App(): ReactElement {
     return () => {
       cancelled = true;
       handle?.unmount();
+      followerRef.current?.stop();
+      followerRef.current = null;
+      setScoreCursor(null);
+      setFollowerState(null);
+      setPracticeMode("off");
     };
   }, [importState, importResult]);
+
+  useEffect(() => {
+    controllerRef.current?.setExpectedFrequencyHz(followerState?.current?.primaryFrequencyHz ?? null);
+  }, [followerState?.current?.stepIndex]);
+
+  useEffect(() => {
+    if (practiceMode === "active" && captureState.status !== "listening") {
+      handleStopPracticing();
+    }
+  }, [captureState.status]);
 
   async function handleStart(): Promise<void> {
     const controller = controllerRef.current;
@@ -136,7 +169,12 @@ export default function App(): ReactElement {
 
     setIsStarting(true);
     try {
-      await controller.start(LIVE_CAPTURE_OPTIONS);
+      await controller.start({
+        ...LIVE_CAPTURE_OPTIONS,
+        deviceId: selectedDeviceId || undefined
+      });
+      const devices = await controller.listInputDevices();
+      setInputDevices(devices);
     } catch {
       // The controller already reflects the error state for the UI.
     } finally {
@@ -150,6 +188,26 @@ export default function App(): ReactElement {
 
   async function handleStop(): Promise<void> {
     await controllerRef.current?.stop();
+  }
+
+  function handleStartPracticing(): void {
+    if (!scoreCursor || captureState.status !== "listening") {
+      return;
+    }
+
+    const follower = new ScoreFollower(scoreCursor);
+    followerRef.current = follower;
+    follower.subscribe(setFollowerState);
+    follower.start();
+    scoreCursor.show();
+    setPracticeMode("active");
+  }
+
+  function handleStopPracticing(): void {
+    followerRef.current?.stop();
+    scoreCursor?.hide();
+    controllerRef.current?.setExpectedFrequencyHz(null);
+    setPracticeMode("off");
   }
 
   function handleDownloadMusicXml(): void {
@@ -195,6 +253,12 @@ export default function App(): ReactElement {
   const noteDisplay = captureState.isSilent || captureState.frequencyHz === null ? "No note" : captureState.note ?? "--";
   const pitchClass = captureState.isSilent ? "idle" : captureState.note ? "active" : "searching";
   const levelRatio = captureState.silenceRmsThreshold > 0 ? Math.min(1, captureState.rms / captureState.silenceRmsThreshold) : 0;
+
+  const liveCentsFromExpected = followerState?.liveCentsOffFromExpected ?? null;
+  const isInTune = liveCentsFromExpected !== null && Math.abs(liveCentsFromExpected) <= DEFAULT_SCORE_FOLLOWER_CONFIG.inTuneCentsThreshold;
+  const intonationLabel = liveCentsFromExpected === null ? "Listening…" : isInTune ? "In tune" : "Off pitch";
+  const intonationColor = liveCentsFromExpected === null ? "#f5f7fb" : isInTune ? "#8ee8cb" : "#ff8a8a";
+  const sessionSummary = summarizePracticeSession(followerState?.history ?? []);
 
   return (
     <div style={styles.page}>
@@ -289,6 +353,30 @@ export default function App(): ReactElement {
             </div>
           </div>
 
+          <div style={styles.metaRow}>
+            <div>
+              <div style={styles.metaLabel}>Active microphone</div>
+              <div style={styles.metaValue}>{captureState.activeDeviceLabel ?? "--"}</div>
+            </div>
+          </div>
+
+          <label style={styles.deviceLabel}>
+            Microphone
+            <select
+              value={selectedDeviceId}
+              onChange={handleDeviceChange}
+              style={styles.deviceSelect}
+              disabled={captureState.status === "listening" || captureState.status === "calibrating"}
+            >
+              <option value="">System default</option>
+              {inputDevices.map((device, index) => (
+                <option key={device.deviceId || index} value={device.deviceId}>
+                  {device.label || `Microphone ${index + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
+
           {captureState.error ? <div style={styles.errorBox}>{captureState.error.message}</div> : null}
 
           <div style={styles.buttonRow}>
@@ -355,11 +443,59 @@ export default function App(): ReactElement {
                 <button type="button" style={styles.secondaryButton} onClick={handleDownloadMusicXml}>
                   Download MusicXML
                 </button>
+                {practiceMode === "active" ? (
+                  <button type="button" style={styles.secondaryButton} onClick={handleStopPracticing}>
+                    Stop practicing
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    style={styles.secondaryButton}
+                    onClick={handleStartPracticing}
+                    disabled={!scoreCursor || captureState.status !== "listening"}
+                  >
+                    Practice this score
+                  </button>
+                )}
               </div>
+
+              {practiceMode === "off" && captureState.status !== "listening" ? (
+                <p style={styles.diagnosticHint}>Start the microphone above to practice this score.</p>
+              ) : null}
 
               {renderError ? <div style={styles.errorBox}>Could not render this score: {renderError}</div> : null}
 
               <div ref={scoreContainerRef} style={styles.scoreContainer} />
+
+              {practiceMode === "active" && followerState?.current ? (
+                <div style={styles.readoutGrid}>
+                  <div style={styles.readoutCard}>
+                    <div style={styles.readoutLabel}>Current note</div>
+                    <div style={styles.readoutValueLarge}>{followerState.current.pitchLabel ?? "--"}</div>
+                    <div style={styles.diagnosticHint}>Measure {followerState.current.measureIndex + 1}</div>
+                  </div>
+                  <div style={styles.readoutCard}>
+                    <div style={styles.readoutLabel}>Intonation</div>
+                    <div style={{ ...styles.readoutValueLarge, color: intonationColor }}>{intonationLabel}</div>
+                    <div style={styles.diagnosticHint}>{formatCents(liveCentsFromExpected)} vs. expected</div>
+                  </div>
+                </div>
+              ) : null}
+
+              {followerState?.status === "completed" ? (
+                <div style={styles.importResult}>
+                  <p style={styles.diagnosticHint}>
+                    Practice session complete — {sessionSummary.unstableNoteIds.length} note
+                    {sessionSummary.unstableNoteIds.length === 1 ? "" : "s"} out of tune,{" "}
+                    {sessionSummary.averageCentsError.toFixed(1)} cents average error.
+                  </p>
+                  <div style={styles.buttonRow}>
+                    <button type="button" style={styles.primaryButton} onClick={handleStartPracticing}>
+                      Practice again
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -500,6 +636,28 @@ const styles: Record<string, CSSProperties> = {
     marginTop: "6px",
     fontSize: "15px",
     fontWeight: 600
+  },
+  deviceLabel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    marginTop: "18px",
+    color: "rgba(204, 214, 232, 0.7)",
+    fontSize: "12px",
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+    maxWidth: "360px"
+  },
+  deviceSelect: {
+    font: "inherit",
+    textTransform: "none",
+    letterSpacing: "normal",
+    fontSize: "14px",
+    padding: "10px 12px",
+    borderRadius: "12px",
+    background: "rgba(255, 255, 255, 0.04)",
+    border: "1px solid rgba(255, 255, 255, 0.14)",
+    color: "#f5f7fb"
   },
   buttonRow: {
     display: "flex",
