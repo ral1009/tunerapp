@@ -30,7 +30,7 @@ export async function importPhotoToScore(imageBytes: Uint8Array): Promise<OmrImp
       body: formData
     });
   } catch {
-    throw new Error(`Could not reach the sheet parser server. Is it running on ${OMR_SERVER_BASE_URL}?`);
+    throw new Error("Could not reach the sheet parser server. Is server/main.py running (see README)?");
   }
 
   const body = (await response.json().catch(() => null)) as ParseSheetResponse | ParseSheetErrorResponse | null;

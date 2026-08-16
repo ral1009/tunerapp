@@ -3,11 +3,15 @@ import path from "node:path";
 
 interface SyntheticClipSpec {
 	file: string;
-	expectedNote: string;
-	expectedFrequencyHz: number;
-	steadyStartMs: number;
-	steadyEndMs: number;
+	// Pitch-accuracy fields -- optional so a clip can be onset-only (see ClipSpec in
+	// runValidation.ts, which this mirrors).
+	expectedNote?: string;
+	expectedFrequencyHz?: number;
+	steadyStartMs?: number;
+	steadyEndMs?: number;
 	restWindowsMs: Array<[number, number]>;
+	expectedOnsetsMs?: number[];
+	onsetDiagnosticOnly?: boolean;
 }
 
 interface ValidationSpec {
@@ -33,7 +37,33 @@ interface VibratoNoteDefinition {
 	fileName: string;
 }
 
-type NoteDefinition = StaticNoteDefinition | VibratoNoteDefinition;
+// A sequence of distinct notes played back-to-back, each with its OWN attack/release envelope
+// (discrete bow-stroke-like attacks, not a continuous legato slur) -- for onset-detector
+// validation. noteDurationMs is attack-to-attack spacing, not audible duration; attackMs/
+// releaseMs shape each note's own smoothstep envelope within that slot.
+interface SequenceNoteDefinition {
+	kind: "sequence";
+	fileName: string;
+	notes: Array<{ note: string; frequencyHz: number }>;
+	noteDurationMs: number;
+	attackMs: number;
+	releaseMs: number;
+	leadInMs: number;
+	trailOutMs: number;
+	onsetDiagnosticOnly?: boolean;
+}
+
+// Pure broadband noise, no tonal content at all -- for testing that OnsetDetector's spectral
+// flux doesn't false-trigger on background noise alone (the app's own live testing found real
+// room/background noise misdetected as high-confidence pitch readings).
+interface NoiseOnlyDefinition {
+	kind: "noise";
+	fileName: string;
+	durationMs: number;
+	amplitude: number;
+}
+
+type NoteDefinition = StaticNoteDefinition | VibratoNoteDefinition | SequenceNoteDefinition | NoiseOnlyDefinition;
 
 const SAMPLE_RATE = 48_000;
 const FRAME_SIZE = 2048;
@@ -66,6 +96,64 @@ const NOTE_DEFINITIONS: NoteDefinition[] = [
 		vibratoRateHz: 5.5,
 		vibratoDepthSemitones: 0.35,
 		fileName: "synthetic-vibrato-a4.wav"
+	}
+];
+
+// G major diatonic scale, comfortably within violin range, reused across the two sequence
+// fixtures below.
+const SCALE_NOTES: Array<{ note: string; frequencyHz: number }> = [
+	{ note: "G4", frequencyHz: 392.0 },
+	{ note: "A4", frequencyHz: 440.0 },
+	{ note: "B4", frequencyHz: 493.88 },
+	{ note: "C5", frequencyHz: 523.25 },
+	{ note: "D5", frequencyHz: 587.33 },
+	{ note: "E5", frequencyHz: 659.25 },
+	{ note: "F#5", frequencyHz: 739.99 },
+	{ note: "G5", frequencyHz: 783.99 }
+];
+
+// Separate from NOTE_DEFINITIONS above (which are single-note pitch-accuracy fixtures) --
+// these are onset-only fixtures for the OnsetDetector validation harness (runValidation.ts).
+const ONSET_SEQUENCE_DEFINITIONS: SequenceNoteDefinition[] = [
+	// Primary gating fixture: distinct, separately-bowed notes at a real "fast passage" tempo
+	// (180ms/note, comfortably above minOnsetIntervalMs's 70ms floor) -- this is what should
+	// catch fluxThreshold being too high to notice legato-ish fast transitions.
+	{
+		kind: "sequence",
+		fileName: "synthetic-sequence-fast-scale.wav",
+		notes: SCALE_NOTES,
+		noteDurationMs: 180,
+		attackMs: 15,
+		releaseMs: 25,
+		leadInMs: 300,
+		trailOutMs: 300
+	},
+	// Same notes, faster than minOnsetIntervalMs (60ms/note) -- recall here is mechanically
+	// capped by that debounce floor regardless of fluxThreshold, so it's diagnostic-only and
+	// must not block the gate.
+	{
+		kind: "sequence",
+		fileName: "synthetic-sequence-very-fast-scale.wav",
+		notes: SCALE_NOTES,
+		noteDurationMs: 60,
+		attackMs: 10,
+		releaseMs: 15,
+		leadInMs: 300,
+		trailOutMs: 300,
+		onsetDiagnosticOnly: true
+	}
+];
+
+const NOISE_ONLY_DEFINITIONS: NoiseOnlyDefinition[] = [
+	// Pure background noise, no tonal content -- directly tests whether spectral flux alone can
+	// false-trigger an onset on noise, independent of the RMS/pitch-confidence gates production
+	// layers on top (see runValidation.ts's documented scope boundary). Amplitude is a rough
+	// stand-in for a quiet room / mic self-noise floor, well below the note envelopes above.
+	{
+		kind: "noise",
+		fileName: "synthetic-sequence-silence-only.wav",
+		durationMs: 3000,
+		amplitude: 0.01
 	}
 ];
 
@@ -197,6 +285,63 @@ function generateVibratoClip(
 	return samples;
 }
 
+function generateSequenceClip(definition: SequenceNoteDefinition): { samples: Float32Array; onsetsMs: number[] } {
+	const totalDurationMs = definition.leadInMs + definition.notes.length * definition.noteDurationMs + definition.trailOutMs;
+	const totalSamples = Math.round((totalDurationMs / 1000) * SAMPLE_RATE);
+	const samples = new Float32Array(totalSamples);
+	const onsetsMs: number[] = [];
+
+	for (let noteIndex = 0; noteIndex < definition.notes.length; noteIndex += 1) {
+		const { frequencyHz } = definition.notes[noteIndex];
+		const noteStartMs = definition.leadInMs + noteIndex * definition.noteDurationMs;
+		onsetsMs.push(noteStartMs);
+
+		// Keyed per-note (not just per-file) so consecutive notes in a fast run aren't
+		// bit-identical in their detune/noise, closer to how a real player's successive bow
+		// strokes vary slightly.
+		const random = createSeededRandom(hashString(`${definition.fileName}#${noteIndex}`));
+		const basePhase = random() * Math.PI * 2;
+		const slightDetune = 1 + (random() - 0.5) * 0.0005;
+
+		const noteStartSample = Math.round((noteStartMs / 1000) * SAMPLE_RATE);
+		const noteEndSample = Math.min(totalSamples, Math.round(((noteStartMs + definition.noteDurationMs) / 1000) * SAMPLE_RATE));
+
+		for (let sampleIndex = noteStartSample; sampleIndex < noteEndSample; sampleIndex += 1) {
+			const timeSeconds = sampleIndex / SAMPLE_RATE;
+			const timeIntoNoteMs = ((sampleIndex - noteStartSample) / SAMPLE_RATE) * 1000;
+			const attackProgress = Math.min(1, Math.max(0, timeIntoNoteMs / definition.attackMs));
+			const releaseProgress = Math.min(1, Math.max(0, (definition.noteDurationMs - timeIntoNoteMs) / definition.releaseMs));
+			const smoothStepInput = Math.min(attackProgress, releaseProgress);
+			const envelope = smoothStepInput * smoothStepInput * (3 - 2 * smoothStepInput);
+
+			const phase = 2 * Math.PI * frequencyHz * slightDetune * timeSeconds + basePhase;
+			const harmonicBlend =
+				0.94 * Math.sin(phase) +
+				0.04 * Math.sin(phase * 2.001) +
+				0.015 * Math.sin(phase * 3.003) +
+				0.005 * Math.sin(phase * 4.004);
+			const attackNoise = timeIntoNoteMs < 50 ? (random() - 0.5) * 0.004 : 0;
+			const breathNoise = (random() - 0.5) * 0.0015;
+
+			samples[sampleIndex] = envelope * harmonicBlend + attackNoise + breathNoise * envelope;
+		}
+	}
+
+	return { samples, onsetsMs };
+}
+
+function generateNoiseOnlyClip(durationMs: number, fileName: string, amplitude: number): Float32Array {
+	const totalSamples = Math.round((durationMs / 1000) * SAMPLE_RATE);
+	const samples = new Float32Array(totalSamples);
+	const random = createSeededRandom(hashString(fileName));
+
+	for (let index = 0; index < totalSamples; index += 1) {
+		samples[index] = (random() - 0.5) * 2 * amplitude;
+	}
+
+	return samples;
+}
+
 function ensureDirectory(dirPath: string): void {
 	fs.mkdirSync(dirPath, { recursive: true });
 }
@@ -217,7 +362,8 @@ function main(): void {
 
 	ensureDirectory(datasetDir);
 
-	const targetFiles = NOTE_DEFINITIONS.map((definition) => path.join(datasetDir, definition.fileName));
+	const allDefinitions: NoteDefinition[] = [...NOTE_DEFINITIONS, ...ONSET_SEQUENCE_DEFINITIONS, ...NOISE_ONLY_DEFINITIONS];
+	const targetFiles = allDefinitions.map((definition) => path.join(datasetDir, definition.fileName));
 	const existingTargetFiles = targetFiles.filter((filePath) => fs.existsSync(filePath));
 	if (existingTargetFiles.length > 0 && !overwrite) {
 		throw new Error(`Refusing to overwrite existing files:\n${existingTargetFiles.join("\n")}\nRe-run with --overwrite.`);
@@ -225,8 +371,40 @@ function main(): void {
 
 	const newClips: SyntheticClipSpec[] = [];
 
-	for (const definition of NOTE_DEFINITIONS) {
+	for (const definition of allDefinitions) {
 		const filePath = path.join(datasetDir, definition.fileName);
+		const relativeFile = path.join("dataset", definition.fileName).split(path.sep).join("/");
+
+		if (definition.kind === "sequence") {
+			const { samples, onsetsMs } = generateSequenceClip(definition);
+			fs.writeFileSync(filePath, encodeWavMono16(samples, SAMPLE_RATE));
+
+			const totalDurationMs = definition.leadInMs + definition.notes.length * definition.noteDurationMs + definition.trailOutMs;
+			const lastNoteEndMs = definition.leadInMs + definition.notes.length * definition.noteDurationMs;
+			newClips.push({
+				file: relativeFile,
+				expectedOnsetsMs: onsetsMs,
+				onsetDiagnosticOnly: definition.onsetDiagnosticOnly,
+				restWindowsMs: [
+					[0, Math.max(0, definition.leadInMs - 30)],
+					[lastNoteEndMs + 30, totalDurationMs]
+				]
+			});
+			continue;
+		}
+
+		if (definition.kind === "noise") {
+			const samples = generateNoiseOnlyClip(definition.durationMs, definition.fileName, definition.amplitude);
+			fs.writeFileSync(filePath, encodeWavMono16(samples, SAMPLE_RATE));
+
+			newClips.push({
+				file: relativeFile,
+				expectedOnsetsMs: [],
+				restWindowsMs: [[0, definition.durationMs]]
+			});
+			continue;
+		}
+
 		const samples =
 			definition.kind === "static"
 				? generateClip(definition.frequencyHz, definition.fileName)
@@ -236,11 +414,10 @@ function main(): void {
 						definition.vibratoDepthSemitones,
 						definition.fileName
 					);
-		const wavBuffer = encodeWavMono16(samples, SAMPLE_RATE);
-		fs.writeFileSync(filePath, wavBuffer);
+		fs.writeFileSync(filePath, encodeWavMono16(samples, SAMPLE_RATE));
 
 		newClips.push({
-			file: path.join("dataset", definition.fileName).split(path.sep).join("/"),
+			file: relativeFile,
 			expectedNote: definition.note,
 			expectedFrequencyHz: definition.kind === "static" ? definition.frequencyHz : definition.centerFrequencyHz,
 			steadyStartMs: STEADY_START_MS,

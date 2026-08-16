@@ -7,6 +7,7 @@ import {
   type StartCaptureOptions
 } from "../audio/captureModule";
 import { importPhotoToScore, type OmrImportResult } from "../score/omrImport";
+import { importMusicXmlToScore } from "../score/musicxmlImport";
 import { renderScore, type RenderedScoreHandle, type ScoreCursor } from "../score/renderer";
 import { ScoreFollower, DEFAULT_SCORE_FOLLOWER_CONFIG, type ScoreFollowerState } from "../practice/cursor";
 import { summarizePracticeSession } from "../practice/reviewSummary";
@@ -152,10 +153,6 @@ export default function App(): ReactElement {
   }, [importState, importResult]);
 
   useEffect(() => {
-    controllerRef.current?.setExpectedFrequencyHz(followerState?.current?.primaryFrequencyHz ?? null);
-  }, [followerState?.current?.stepIndex]);
-
-  useEffect(() => {
     if (practiceMode === "active" && captureState.status !== "listening") {
       handleStopPracticing();
     }
@@ -206,7 +203,6 @@ export default function App(): ReactElement {
   function handleStopPracticing(): void {
     followerRef.current?.stop();
     scoreCursor?.hide();
-    controllerRef.current?.setExpectedFrequencyHz(null);
     setPracticeMode("off");
   }
 
@@ -246,6 +242,30 @@ export default function App(): ReactElement {
       setImportState("success");
     } catch (err) {
       setImportError(err instanceof Error ? err.message : "Unknown error while importing sheet music.");
+      setImportState("error");
+    }
+  }
+
+  // Bypasses HOMR entirely -- useful for isolating the live tuner/score-following pipeline from
+  // OMR pitch-recognition accuracy when testing.
+  async function handleMusicXmlFileSelected(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    setImportState("loading");
+    setImportError(null);
+    setImportResult(null);
+
+    try {
+      const xmlData = await file.text();
+      const score = await importMusicXmlToScore(xmlData);
+      setImportResult({ score, transientBoundingBoxes: [], xmlData });
+      setImportState("success");
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Unknown error while importing the MusicXML file.");
       setImportState("error");
     }
   }
@@ -405,10 +425,21 @@ export default function App(): ReactElement {
             {importState === "loading" ? <span style={{ ...styles.statusPill, ...statusStyles.calibrating }}>Parsing sheet…</span> : null}
           </div>
 
-          <label style={styles.secondaryButton}>
-            Choose sheet music photo
-            <input type="file" accept="image/*" onChange={handleSheetFileSelected} style={styles.hiddenFileInput} />
-          </label>
+          <div style={styles.buttonRow}>
+            <label style={styles.secondaryButton}>
+              Choose sheet music photo
+              <input type="file" accept="image/*" onChange={handleSheetFileSelected} style={styles.hiddenFileInput} />
+            </label>
+            <label style={styles.secondaryButton}>
+              Choose MusicXML file
+              <input
+                type="file"
+                accept=".xml,.musicxml,application/vnd.recordare.musicxml+xml,text/xml,application/xml"
+                onChange={handleMusicXmlFileSelected}
+                style={styles.hiddenFileInput}
+              />
+            </label>
+          </div>
 
           {importState === "error" && importError ? <div style={styles.errorBox}>{importError}</div> : null}
 

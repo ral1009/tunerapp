@@ -9,6 +9,9 @@
       "expectedFrequencyHz": 440,
       "steadyStartMs": 250,
       "steadyEndMs": 1700,
+      "expectedOnsetsMs": [
+        200
+      ],
       "restWindowsMs": [
         [
           0,
@@ -17,6 +20,25 @@
         [
           1800,
           2200
+        ]
+      ]
+    },
+    {
+      "file": "dataset/example-sequence.wav",
+      "expectedOnsetsMs": [
+        300,
+        480,
+        660
+      ],
+      "onsetDiagnosticOnly": false,
+      "restWindowsMs": [
+        [
+          0,
+          270
+        ],
+        [
+          810,
+          1000
         ]
       ]
     }

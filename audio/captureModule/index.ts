@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 
 import { PitchDetector, type PitchDetectionResult } from "../pitchDetector";
-import { calculateRms } from "../preprocessing";
+import { calculateRms, applyBandPass } from "../preprocessing";
 import { OnsetDetector } from "../onsetDetector";
 
 export interface PcmFrame {
@@ -94,6 +94,16 @@ const DEFAULT_SMOOTHING_WINDOW_FRAMES = 5;
 const DEFAULT_EXPECTED_NOTE_WINDOW_SEMITONES = 3;
 const CALIBRATION_WINDOW_MS = 500;
 const WATCHDOG_LIVENESS_TIMEOUT_MS = 4000;
+// A flux-only onset spike and the pitch detector's own confidence don't necessarily land on the
+// same frame -- flux is a brief transient right at the transition, while pitch detection can
+// take a few frames to lock onto a genuinely new note (confirmed offline: on a clean synthetic
+// scale, a note preceded by another note usually still had a non-null, if briefly stale,
+// pitch reading at the flux frame; a note preceded by true silence -- e.g. the very first note
+// of a practice session -- had no such fallback and reported detector_no_pitch exactly on the
+// flux frame). Remembering the flux spike for a short window and letting a later frame's valid
+// pitch confirm it (mirrors practice/cursor.ts's pendingTransition retry) avoids permanently
+// losing an onset just because the two signals settled a frame or two apart.
+const ONSET_PITCH_CONFIRM_WINDOW_MS = 120;
 // The noise gate is intentionally *relative* to each device's own measured noise floor rather than an
 // absolute constant: mic hardware sensitivity varies by orders of magnitude across devices (a quiet laptop
 // mic can read ~0.0001 RMS while playing loudly, versus ~0.05+ on a phone), and a fixed absolute floor here
@@ -268,6 +278,9 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   private detector: PitchDetector | null = null;
   private onsetDetector: OnsetDetector | null = null;
   private expectedFrequencyHz: number | null = null;
+  // Timestamp of the most recent flux-only onset spike still awaiting a confident pitch reading
+  // to confirm it -- see ONSET_PITCH_CONFIRM_WINDOW_MS below for why this exists.
+  private pendingOnsetFluxTimestampMs: number | null = null;
   private frameBuffer = new Float32Array(DEFAULT_FRAME_SIZE);
   private frameBufferLength = 0;
   private nextFrameStartSampleIndex = 0;
@@ -359,6 +372,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     this.gainScalar = 1;
     this.calibrationRmsSamples = [];
     this.expectedFrequencyHz = null;
+    this.pendingOnsetFluxTimestampMs = null;
     this.clearWatchdogTimer();
 
     const audioContextConstructor = getAudioContextConstructor();
@@ -702,15 +716,44 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       // Onset detection runs on a small, fixed-size tail window (independent of the larger
       // pitch-analysis frame) and must read the *ungained* signal, before applyGain below
       // mutates rawSamples in place -- keeps onset flux behavior independent of the
-      // per-device software gain scalar.
-      const onsetWindow = rawSamples.subarray(rawSamples.length - ONSET_ANALYSIS_FRAME_SIZE);
+      // per-device software gain scalar. Band-passed to the violin range first so broadband
+      // noise (room hum, mic self-noise, breathing) outside the instrument's actual range can't
+      // contribute flux -- mirrors the filtering the pitch detector already applies.
+      const onsetWindow = applyBandPass(
+        rawSamples.subarray(rawSamples.length - ONSET_ANALYSIS_FRAME_SIZE),
+        sampleRate,
+        this.config.lowCutHz,
+        this.config.highCutHz
+      );
       const onsetResult = this.onsetDetector.detect(onsetWindow, timestampMs);
 
       const detection = this.detector.detect({
         samples: this.applyGain(rawSamples),
         expectedFrequencyHz: this.expectedFrequencyHz ?? undefined
       });
-      const liveFrame = this.toLiveFrame(detection, sampleRate, timestampMs, rawSamples, rawRms, onsetResult.onset);
+      // Spectral flux alone is not enough evidence of a real onset -- room noise, typing, and
+      // other non-violin sound can cross a flux threshold without ever producing a pitch the
+      // detector is confident in. Requiring the pitch detector's own gate + confidence threshold
+      // (detection.frequencyHz !== null) to also clear, within ONSET_PITCH_CONFIRM_WINDOW_MS of
+      // the flux spike rather than on that exact same frame, means an onset can only fire when a
+      // real, confidently-pitched sound is actually present -- this is what previously let a
+      // whole score complete on its own with nothing played: flux-only gating (plus a raw-RMS
+      // floor) was still permissive enough for ordinary room noise.
+      if (onsetResult.onset && rawRms >= this.calibratedSilenceRmsThreshold) {
+        this.pendingOnsetFluxTimestampMs = timestampMs;
+      }
+
+      let onsetDetected = false;
+      if (this.pendingOnsetFluxTimestampMs !== null) {
+        const withinConfirmWindow = timestampMs - this.pendingOnsetFluxTimestampMs <= ONSET_PITCH_CONFIRM_WINDOW_MS;
+        if (withinConfirmWindow && rawRms >= this.calibratedSilenceRmsThreshold && detection.frequencyHz !== null) {
+          onsetDetected = true;
+          this.pendingOnsetFluxTimestampMs = null;
+        } else if (!withinConfirmWindow) {
+          this.pendingOnsetFluxTimestampMs = null;
+        }
+      }
+      const liveFrame = this.toLiveFrame(detection, sampleRate, timestampMs, rawSamples, rawRms, onsetDetected);
 
       this.emitState({
         status: this.audioContext?.state === "suspended" ? "suspended" : "listening",

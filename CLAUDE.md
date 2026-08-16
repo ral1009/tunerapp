@@ -52,7 +52,7 @@ Both the Vite dev server and this Python server must be running simultaneously f
 
 `PitchDetector` is a hybrid, not a single algorithm: primary estimate from `pitchfinder`'s YIN, a hand-rolled normalized-autocorrelation search as fallback (or as the primary path when an `expectedFrequencyHz` hint narrows the search window — this hint mechanism is what future score-following work would drive), a difference-function heuristic to catch octave-halving errors in the 350–600Hz band, and a rolling median smoother. Confidence is computed separately via normalized cross-correlation at the detected lag.
 
-`audio/onsetDetector.ts` (`OnsetDetector`, spectral-flux based) exists but is **not wired into `captureModule` or `App.tsx`** — it's a standalone module, not currently part of the live pipeline.
+`audio/onsetDetector.ts` (`OnsetDetector`, spectral-flux based) is wired into `audio/captureModule/index.ts`, which emits `onsetDetected` on every live frame; `practice/cursor.ts`'s `ScoreFollower` consumes it to advance the score cursor per detected onset. This wiring is early-stage and not yet validated as working well against real playing — see `sheet-music-tuner-plan.md` §11 for current status.
 
 ### Sheet music import → render pipeline (`score/`)
 Two import paths normalize into the same `ScoreDocument` (`score/schema.ts`):
@@ -71,8 +71,11 @@ Pitch strings are formatted consistently as `<Step><#|b|><Octave>` (e.g. `C#4`, 
 
 `score/correctionUI/index.ts` has one real function (`applyCorrection`, patches pitch/duration on notes by id) but no actual UI — it's a data-layer stub, not wired to any component.
 
+### Score-following + practice review (`practice/`)
+`practice/cursor.ts` (`ScoreFollower`) and `practice/reviewSummary.ts` (`summarizePracticeSession`) are implemented and wired into `App.tsx`: `ScoreFollower` consumes live capture frames (including `onsetDetected`) plus the `ScoreCursor` from `score/renderer` to advance through the score note-by-note, tracks median cents-off per note, and produces a per-note history that `reviewSummary.ts` reduces into a post-session summary (out-of-tune note count, average cents error) shown in `App.tsx`. This is wired but early-stage — not yet validated as reliable against real playing.
+
 ### Placeholder modules
-`practice/` (`cursor.ts`, `metronome.ts`, `reviewSummary.ts`, `spotPractice.ts`, `streak.ts`) and `storage/db.ts` are all minimal interface/stub files (10–15 lines each) — typed contracts for future features (practice-session tracking, an `expo-sqlite` adapter for the eventual React Native shell), not yet consuming any real data or wired into `App.tsx`.
+`practice/metronome.ts`, `practice/spotPractice.ts`, `practice/streak.ts`, and `storage/db.ts` are still minimal interface/stub files (10–15 lines each) — typed contracts for future features (a tempo-synced metronome, spot-practice looping, practice streak tracking, an `expo-sqlite` adapter for the eventual React Native shell), not yet consuming any real data or wired into `App.tsx`.
 
 ### UI
 `src/App.tsx` is the only React component in the app (no `components/`/`hooks/` directories exist) — plain `useState`/`useRef`, inline `CSSProperties` style objects in a `styles` const, dark card-based visual theme. It has two independent sections: the live tuner (drives `captureModule`) and the sheet-music import card (drives `omrImport` → `renderer`) — they don't share state.

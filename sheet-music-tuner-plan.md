@@ -211,3 +211,41 @@ Bowed-string onsets are softer than plucked or percussive onsets — validate on
 - Buffer size / sample rate tradeoffs for the native audio module will need real device testing — don't lock these in from research alone, tune them against the offline validation set in §5.
 - Which pitch-detection library to standardize on (`pitchfinder`'s YIN vs. AMDF vs. another option) should be picked based on which performs best against the recorded validation set, not by default.
 - Decide how much UI polish the correction screen (§4b) needs for v1 vs. treating it as functional-but-plain until the rest of the app is solid.
+
+---
+
+## 11. Progress Update & Mobile Transition Plan (v3 addendum, 2026-08-14)
+
+The sections above (v2) were written before any code existed and assumed a native-mobile build from day one. In practice the actual build took a different, deliberate path: a fast-iterating Vite/React **web prototype** (`src/`, `audio/`, `score/`, `practice/`, `storage/` at the repo root) was built first, to de-risk the pitch pipeline, OMR integration, OSMD rendering, and score-following algorithm before committing to native mobile complexity. This addendum captures where that prototype actually stands and what "transition to mobile" concretely means from here. It supersedes v2's sequencing, not its underlying design decisions (data model, DSP approach, OMR pipeline) — those still hold.
+
+### Status as of now
+
+- **Phase 0 (pitch detection foundation): done and validated.** `npm run phase0:validate` gate passing.
+- **Phase 1 core loop is wired end-to-end in code, but not yet working well.** MusicXML + photo import, OSMD rendering with automatic beaming, onset-detection score-following (`practice/cursor.ts`'s `ScoreFollower`, driven by `audio/onsetDetector.ts` now wired into `audio/captureModule/index.ts`), a live in-tune/out-of-tune indicator, and a post-session practice review summary (`practice/reviewSummary.ts`) all call into each other in `src/App.tsx`. That is a "wired" milestone, not a "working" one — it's early-stage and still needs real debugging/iteration against actual playing, not just a manual sign-off pass.
+- **Fully unstarted on top of that**: the metronome (`practice/metronome.ts` is just a `msPerBeat` helper, not wired to anything) and the OMR lightweight correction screen (§4b — `score/correctionUI/index.ts` has the `applyCorrection` data function but no UI).
+- The web-first pivot was effective, not a detour: the native capture-module stubs (`audio/captureModule/ios`, `/android`) and `storage/db.ts`'s explicit "wire expo-sqlite in Phase 1/2 app shell" comment show the eventual RN port was anticipated from the start, even while iterating on web.
+
+### Gate before starting the mobile transition
+
+The core loop must first be made to **actually work well** — validated by playing violin against a real imported piece end-to-end, not just wired code or a passing typecheck. This repo's existing philosophy (test suites verify correctness, not feature completeness) applies here too. **Phase 1.5 below does not start until this gate passes** — porting a loop that isn't working yet to a second platform would just double the debugging surface across two audio stacks at once.
+
+### Phase 1.5 — Mobile Transition
+
+Once the core loop gate passes, transition into an RN + Expo (bare workflow) app shell as a module-by-module port, not a rewrite:
+
+1. Stand up the RN + Expo (bare workflow) app shell.
+2. Port with little/no change — these are plain TypeScript with no DOM/Web-Audio coupling: `audio/pitchDetector.ts`, `preprocessing.ts`, `onsetDetector.ts`, `fft.ts`, `score/schema.ts`, `musicxmlImport.ts`, `omrImport.ts` (swap the base URL), `beamGrouping.ts`, `practice/cursor.ts`, `practice/reviewSummary.ts`.
+3. Replace the Web Audio/`AudioWorklet` frame source in `audio/captureModule/index.ts` with the real iOS/Android native modules — wiring up the currently-unwired `audio/captureModule/ios` and `/android` stubs to actually capture raw PCM and feed it through the same frame pipeline — while keeping the same `MicrophoneCaptureController` interface so calling code doesn't change. **Build and validate Android first** (`audio/captureModule/android`, Kotlin/`AudioRecord`) on real hardware before starting iOS — bringing up native mic capture on both platforms at once would double the debugging surface the same way porting a not-yet-working core loop would.
+4. Rebuild `score/renderer` as an OSMD-in-WebView bridge rather than a native rewrite: keep `beamGrouping.ts` and the OSMD parsing/metadata-override logic untouched inside the WebView, and add a thin message bridge so `ScoreCursor` (reset/advance/show/hide) still satisfies the interface `practice/cursor.ts`'s `ScoreFollower` already depends on. This preserves the already-solved beam-grouping bug fix and title/composer heuristic instead of re-discovering equivalent bugs in a from-scratch renderer.
+5. Wire `storage/db.ts`'s `DatabaseAdapter` to `expo-sqlite` — already flagged as the explicit next step in that file's own comment.
+6. Deploy `server/` (FastAPI + `homr`) somewhere reachable over HTTPS from a physical/simulator device, and update its CORS allowlist accordingly — it currently only runs as a local dev server, which a mobile device off the dev machine's network can't reach.
+7. Rebuild the `App.tsx` UI as RN screens. This is the one large presentational rewrite; the underlying state logic (capture state machine, `ScoreFollower`, review summary) carries over unchanged — only the view layer is redone.
+8. Acceptance gate: the same manual "play a real imported piece end-to-end" test, now on a physical device, plus a re-check of buffer size / sample rate assumptions on-device (already flagged as an open question in §10) since those were only tuned against desktop/web behavior.
+
+### Revised phase order after the transition
+
+All feature work from here is mobile-native — there's no more prototyping value in building anything new on web first, so the web prototype becomes a frozen reference once the mobile core-loop gate (step 8 above) passes, not a maintained parallel target:
+
+- **Phase 1 close-out**: metronome wired to the score's tempo; OMR lightweight correction screen (§4b) built as a native RN screen.
+- **Phase 2**: "Hide tuner" ear-training mode; fingering annotation. (Practice Review — §7 Phase 2's other item — already carries over working from web.)
+- **Phase 3**: markup layer; Spot Practice loop; Practice Streak (`practice/streak.ts` is still a full stub — untouched since it was first scaffolded).

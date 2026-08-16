@@ -26,7 +26,12 @@ logger = logging.getLogger("homr_sheet_parser")
 app = FastAPI(title="HOMR Sheet Parser")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://localhost:5173"],
+    # Normal browser traffic goes through Vite's dev-server proxy (see vite.config.ts) as a
+    # same-origin request, which needs no CORS allowance at all. This allowlist only matters for
+    # direct requests to this server (e.g. curl, or a client that bypasses the proxy) -- kept
+    # permissive across localhost/127.0.0.1/any private-LAN IP on Vite's dev port since this
+    # server is local-dev-only, not deployed.
+    allow_origin_regex=r"https://(localhost|127\.0\.0\.1|(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.[\d.]+):5173",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -26,17 +26,18 @@ Current Goal:
 
 ## Current status
 
-- Phase 0 scaffolded in this repo
-- DSP pipeline implemented in `audio/preprocessing.ts` and `audio/pitchDetector.ts`
-- Offline validation harness implemented in `audio/__tests__/offline-validation`
-- Native capture module currently stubbed for iOS/Android bridge wiring
+- **Phase 0 (pitch detection foundation): done and validated.** `npm run phase0:validate` passes.
+- **Phase 1 core loop: wired end-to-end, but not yet working well.** Photo import (via a Python OMR microservice, see `server/`) and MusicXML import both normalize into `ScoreDocument`, render through OpenSheetMusicDisplay, and drive an onset-detection score-following cursor with a live in-tune/out-of-tune indicator and a post-session practice review summary — all connected in `src/App.tsx`. This is early-stage and still needs real debugging against actual playing, not a finished loop yet.
+- Not started: metronome, the OMR lightweight correction screen, and the mobile transition (React Native + Expo is the long-term target platform; this repo is currently a web prototype).
+- See [sheet-music-tuner-plan.md](sheet-music-tuner-plan.md) §11 for the up-to-date status writeup and the mobile transition plan.
 
 ## Project layout
 
-- `audio/` Phase 0 DSP + capture/onset modules
-- `score/` shared score schema + import/renderer/correction placeholders
-- `practice/` cursor/metronome/review tools placeholders
+- `audio/` DSP pipeline (preprocessing, pitch detection, onset detection) + web capture module, with unwired native iOS/Android capture stubs for the eventual mobile port
+- `score/` shared score schema, MusicXML + OMR import (normalizing to one schema), OSMD-based renderer, and a correction-UI data layer (no UI built yet)
+- `practice/` score-following cursor (`cursor.ts`) and post-session review summary (`reviewSummary.ts`) are implemented and wired in; metronome, spot-practice, and streak tracking are still stub interfaces
 - `storage/` DB adapter contract for future `expo-sqlite` integration
+- `server/` standalone Python FastAPI microservice that runs OMR (`homr`) on uploaded sheet-music photos; not part of the Node toolchain, must be run separately alongside the web app
 
 ## Install
 
@@ -46,6 +47,22 @@ Current Goal:
 ```bash
 npm install
 ```
+
+3. The photo-import feature also needs the OMR microservice running (`server/`, Python/FastAPI, requires `uv`/`uvx` on PATH):
+
+```bash
+cd server
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+## Run
+
+```bash
+npm run dev:web        # Vite dev server at https://localhost:5173 (self-signed cert; HTTPS is required for mic capture)
+```
+
+Both the Vite dev server and the `server/` Python process need to be running at once for sheet-music-photo import to work end-to-end.
 
 ## Phase 0 validation workflow
 
@@ -67,6 +84,7 @@ The validation script enforces the plan gate before Phase 1:
 
 ## Next build steps
 
-1. Complete native PCM capture bridge in `audio/captureModule/ios` and `audio/captureModule/android`.
-2. Tune preprocessing + confidence thresholds using real violin recordings until validation passes.
-3. Start Phase 1 (`score/` import/rendering loop) only after Phase 0 gate is consistently green.
+1. Debug and validate the Phase 1 core loop (HOMR import + live tuner + score-following + intonation feedback) end-to-end by actually playing violin against a real imported piece — it's wired but not working reliably yet.
+2. Once that gate passes, close out the rest of Phase 1: metronome, OMR lightweight correction screen.
+3. Begin the mobile transition (React Native + Expo) per §11 of the plan — porting the DSP/score/practice logic largely as-is, wiring the native iOS/Android capture stubs in `audio/captureModule`, and rebuilding the renderer as an OSMD-in-WebView bridge.
+4. Phase 2/3 features (ear training mode, fingering annotation, markup, spot practice, streak) are planned to be built natively in the mobile app after the transition, not prototyped further on web.
