@@ -1,6 +1,6 @@
 # Offline Validation Harness
 
-This directory contains the Phase 0 acceptance test harness for pitch detection and onset detection.
+This directory contains the Phase 0 acceptance test harness for pitch detection and onset detection. For score-following (`practice/cursor.ts`'s `ScoreFollower`) decision-logic verification, see the sibling harness at `practice/__tests__/resync-harness.ts` (run via `npm run followerTest`) — same rationale, different scope: synthetic frame sequences against a mocked `ScoreCursor` rather than recorded audio. Passing either harness is necessary but not sufficient on its own; both have needed live re-testing to catch real bugs the synthetic/mocked inputs couldn't surface (see `CLAUDE.md`'s score-following section).
 
 ## Expected files
 
