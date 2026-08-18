@@ -18,11 +18,6 @@ export interface ScoreRenderOptions {
   // metadata card never disagree.
   titleOverride?: string;
   composerOverride?: string;
-  // Strips HOMR's <stem> hints and replaces any <beam> data with our own beat-aware
-  // computation (see beamGrouping.ts) — OSMD's own automatic beaming isn't reliable enough
-  // on real HOMR output (confirmed: it fails outright on repeating pitch patterns). Only
-  // meaningful for OMR-sourced scores — see renderScore.
-  stripUnreliableBeaming?: boolean;
 }
 
 // Rewrites <work-title> and <identification><creator type="composer"> (creating either if
@@ -87,6 +82,25 @@ function stripStemHints(xml: string): string {
   return new XMLSerializer().serializeToString(doc);
 }
 
+// Whether the source XML already carries its own <beam> data. OSMD's `autoBeam` option only
+// fills gaps for notes with none at all -- and that fallback has been directly confirmed to fail
+// outright on certain patterns (repeating pitches; see beamGrouping.ts), not just to be a rough
+// approximation. So whenever the source has no beam data of its own, we compute correct beams
+// ourselves instead of trusting autoBeam -- regardless of where the XML came from. This used to
+// only run for OMR/photo-sourced scores (gated on sourceType, since HOMR output typically has no
+// beam data), which silently meant a directly-uploaded MusicXML file lacking its own beam data
+// (common -- many exporters omit it) rendered with OSMD's broken autoBeam instead. A file that
+// DOES already carry real beam data (e.g. from real notation software) is left untouched.
+function hasBeamData(xml: string): boolean {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.querySelector("parsererror")) {
+    // Can't tell -- let OSMD's own parse (and error handling) be the source of truth rather than
+    // rewriting XML we couldn't even parse ourselves.
+    return true;
+  }
+  return doc.querySelector("note > beam") !== null;
+}
+
 // Renders directly from the raw MusicXML text via OpenSheetMusicDisplay (OSMD) rather than
 // through the app's internal ScoreDocument reduction. ScoreDocument drops rests, ties, slurs,
 // articulations, and dynamics entirely (it only tracks pitched notes for score-following), so
@@ -99,8 +113,6 @@ export async function renderScore(
 ): Promise<RenderedScoreHandle> {
   container.innerHTML = "";
 
-  const hasOverride = Boolean(options.titleOverride || options.composerOverride || options.stripUnreliableBeaming);
-
   const osmd = new OpenSheetMusicDisplay(container, {
     autoResize: true,
     backend: "svg",
@@ -108,15 +120,13 @@ export async function renderScore(
     setWantedStemDirectionByXml: false,
     drawTitle: options.drawTitle ?? true,
     drawComposer: options.drawComposer ?? true,
-    onXMLRead: hasOverride
-      ? (xml: string) => {
-          const withMetadata = applyMetadataOverrides(xml, options.titleOverride, options.composerOverride);
-          if (!options.stripUnreliableBeaming) {
-            return withMetadata;
-          }
-          return applyAutomaticBeaming(stripStemHints(withMetadata));
-        }
-      : undefined
+    onXMLRead: (xml: string) => {
+      const withMetadata = applyMetadataOverrides(xml, options.titleOverride, options.composerOverride);
+      if (hasBeamData(withMetadata)) {
+        return withMetadata;
+      }
+      return applyAutomaticBeaming(stripStemHints(withMetadata));
+    }
   });
 
   await osmd.load(xmlData);

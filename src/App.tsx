@@ -17,7 +17,10 @@ type ImportState = "idle" | "loading" | "success" | "error";
 const LIVE_CAPTURE_OPTIONS: StartCaptureOptions = {
   frameSize: 2048,
   hopSize: 512,
-  confidenceThreshold: 0.4,
+  // Below this, PitchDetector treats the reading as unreliable and returns frequencyHz: null
+  // (audio/pitchDetector.ts), which the UI already renders as "No note" (see noteDisplay below) --
+  // 0.4 was letting low-confidence background noise through as a falsely-confident detected pitch.
+  confidenceThreshold: 0.67,
   silenceRmsThreshold: 0.005,
   lowCutHz: 80,
   highCutHz: 3500,
@@ -124,8 +127,7 @@ export default function App(): ReactElement {
 
     renderScore(importResult.xmlData, scoreContainerRef.current, {
       titleOverride: importResult.score.title,
-      composerOverride: importResult.score.composer || undefined,
-      stripUnreliableBeaming: importResult.score.sourceType === "photo"
+      composerOverride: importResult.score.composer || undefined
     })
       .then((resolvedHandle) => {
         if (cancelled) {
@@ -198,6 +200,11 @@ export default function App(): ReactElement {
     follower.start();
     scoreCursor.show();
     setPracticeMode("active");
+
+    // TEMPORARY debug hook for live resync diagnosis -- run `__scoreFollower.getTrace()` in the
+    // browser console after a practice session to see the resync decision log. Remove once the
+    // resync algorithm is validated against real playing.
+    (window as unknown as { __scoreFollower?: ScoreFollower }).__scoreFollower = follower;
   }
 
   function handleStopPracticing(): void {
