@@ -10,9 +10,19 @@ export interface NoteAccuracyRecord {
   pitchLabel: string | null;
   expectedFrequencyHz: number;
   centsOffSamples: number[];
-  // Median of centsOffSamples; null if empty.
+  // Median of centsOffSamples; null if empty (including when inferredFromRepeat -- see below,
+  // which copies the PREVIOUS note's averageCentsOff here rather than leaving null).
   averageCentsOff: number | null;
   verdict: NoteVerdict;
+  // True when this note got zero usable pitch samples of its own (would otherwise be
+  // "not_played") but immediately follows an identically-pitched note that DID get a real
+  // verdict, and inherited that note's verdict/averageCentsOff instead -- see
+  // finalizeCurrentNote(). Common on same-pitch repeated notes (e.g. "Twinkle Twinkle"'s "D D"):
+  // the second note produces no fresh onset-adjacent settle window distinct enough from the
+  // first to collect its own samples, but there's no reason to believe its intonation differs
+  // from the note immediately preceding it at the same pitch. False for every ordinarily-measured
+  // or genuinely-not-played record.
+  inferredFromRepeat: boolean;
 }
 
 export type ScoreFollowerStatus = "idle" | "awaiting_first_onset" | "in_progress" | "completed" | "stopped";
@@ -26,6 +36,12 @@ export interface ScoreFollowerState {
   // current note or no usable pitch sample yet for it. Safe for live UI display.
   liveCentsOffFromExpected: number | null;
   history: NoteAccuracyRecord[];
+  // Mirrors the most recent live frame's LivePitchFrame.reason -- purely diagnostic, does not
+  // drive any resync/onset decision. Surfaces *why* a frame produced no usable pitch (silence vs.
+  // low_confidence vs. outside_expected_window vs. detector_no_pitch vs. outside_violin_range)
+  // for live debugging via window.__scoreFollower, e.g. distinguishing "the player genuinely
+  // stopped" from "the detector is rejecting real signal" when resync seems stuck.
+  lastPitchReason: LivePitchFrame["reason"];
 }
 
 export interface ScoreFollowerConfig {
@@ -122,6 +138,85 @@ export interface ScoreFollowerConfig {
   // averages toward its true center over time), so individual swung readings get absorbed instead
   // of evicted.
   implicitOnsetClusterToleranceSemitones: number;
+  // Kill switch for edit-distance-tolerant sequence resync matching (below), independent of
+  // implicitOnsetEnabled -- flip to false to instantly revert findSequenceMatches() to its
+  // original exact-contiguous-only behavior for live A/B comparison, same convention as
+  // implicitOnsetEnabled. Defaults to false until live-validated: this changes core resync
+  // matching behavior (not an additive/diagnostic-only change like lastPitchReason), so per this
+  // project's history of harness-green/live-broken resync regressions, it ships off by default
+  // and gets flipped on deliberately once a live session confirms it behaves as intended.
+  // Confirmed live (deletion-tolerance only, insertion off): correctly bridges a single missed
+  // note. How many CONSECUTIVE missed notes it can bridge is controlled separately by
+  // fuzzySequenceMaxSkips below.
+  fuzzySequenceMatchingEnabled: boolean;
+  // How many score notes a deletion-tolerant match may skip in total when bridging a gap (see
+  // matchSequenceWithSkips) -- i.e. how many CONSECUTIVE missed onsets it can recover from, not
+  // just one. Defaults to 1, exactly matching the originally-shipped, live-confirmed behavior --
+  // bump this deliberately (2, 3, ...) to test bridging larger gaps, since a bigger value widens
+  // the search space and therefore the risk of a wrong-but-plausible match; there's no evidence
+  // yet on where that risk becomes noticeable, so this needs its own live A/B round same as any
+  // other value change in this file. Only affects deletion-tolerant matching -- insertion-
+  // tolerant matching (fuzzyInsertionMatchingEnabled) still only ever excludes a single observed
+  // reading, unchanged.
+  fuzzySequenceMaxSkips: number;
+  // Separate kill switch, ADDITIONAL to fuzzySequenceMatchingEnabled (both must be true), for
+  // specifically the insertion-tolerant half of fuzzy matching (see
+  // sequenceMatchesWithInsertion/SequenceMatch.editDistance's doc comment). Split out and
+  // defaulted off after live testing on real playing: deletion-tolerant matching never discards
+  // anything the player actually played, but insertion-tolerant matching, by construction, DOES --
+  // it treats one buffered reading as noise to make the rest fit nearby. Confirmed live: a
+  // 3-reading buffer where the middle reading was genuine noise resolved by discarding a real
+  // reading instead (one that was nearly identical in pitch to another in the buffer), landing a
+  // resync short of the player's actual position -- silently biased toward the nearest
+  // good-enough explanation rather than the correct farther one. Deletion-tolerant matching alone
+  // already covers the diagnosed root cause (a missed note leaving a gap); insertion-tolerant
+  // matching is the riskier, more speculative half and needs its own dedicated live validation
+  // before it's trusted to actually commit a resync on its own.
+  fuzzyInsertionMatchingEnabled: boolean;
+  // Kill switch for scaling implicitOnsetMinStableMs by an empirical tempo estimate instead of
+  // using its fixed value always. Rationale: at a fast tempo, a note can genuinely last less than
+  // the static default (200ms), meaning the implicit trigger structurally could never fire for it
+  // in time no matter how real the legato transition is; at a slow tempo, the static default may
+  // be needlessly twitchy relative to how long notes actually last. Off by default per this
+  // project's standing convention for any behavior-changing addition -- needs its own live
+  // validation round, separate from and after fuzzySequenceMatchingEnabled's.
+  adaptiveStabilityWindowEnabled: boolean;
+  // Fraction of the CURRENT (departing) note's estimated real-time duration used as the adaptive
+  // minStableMs target -- see computeAdaptiveMinStableMs(). An "informed but not certain" number,
+  // not derived from anything rigorous: large enough that a genuine full-length legato note
+  // reliably clears it, small enough to meaningfully beat the static 200ms default at faster
+  // tempos. Tune with live evidence, not in the abstract.
+  adaptiveStabilityWindowFraction: number;
+  // Hard floor under the adaptive value, regardless of tempo -- mirrors
+  // implicitOnsetMinStableMs's own reasoning (must exceed one full violin vibrato cycle,
+  // ~125-200ms at 5-8Hz) so a very fast estimated tempo can never shrink the window into the
+  // range where heavy vibrato risks a false trigger. Set at the conservative (higher) end of that
+  // range, same bias as implicitOnsetMinStableMs's own default.
+  adaptiveStabilityWindowFloorMs: number;
+  // How many recent (departing note actual elapsed ms / its notated quarter-note duration)
+  // samples to keep for the rolling tempo estimate -- see recordTempoSample(). A short window
+  // deliberately favors reacting to the player's CURRENT pace (they sped up/slowed down mid-piece)
+  // over a piece-wide average, at the cost of being noisier per-sample; the median (not mean) is
+  // what actually absorbs that noise, same rationale as this codebase's other median smoothers.
+  tempoEstimateSampleCount: number;
+  // A note shorter than this (in quarter-note units) is never used as a tempo sample -- its
+  // observed elapsed time is dominated by attackSettleMs/onset-detection latency relative to its
+  // own short notated duration, making the IMPLIED tempo estimate proportionally noisier the
+  // shorter the note is. 0.5 = an eighth note; anything at or above that is trusted.
+  tempoEstimateMinQuarterNotes: number;
+  // Kill switch for acting on LivePitchFrame.onsetConfidence (audio/captureModule/index.ts's
+  // flux/energy fusion vote). Off by default per this project's standing convention -- computing
+  // the confidence signal is always-on/cheap (like tempo sampling in Phase 2), but ACTING on it
+  // (extraSettleMs below) is a behavior change that needs its own live validation round.
+  energyOnsetFusionEnabled: boolean;
+  // Extra time (added to both pendingTransitionWindowMs's deadline and attackSettleMs's settle
+  // gate -- see extraSettleMsFor()) given to a pending transition whose opening/most-recently-
+  // extending onset was fusion-"low" confidence (only one of the two onset detectors fired for
+  // it). Rationale: a single-detector onset is more likely to be a borderline/marginal attack (or
+  // occasionally a false one), so it's worth a bit more patience before trusting a reading that
+  // follows it, rather than treating it exactly like a confidently double-detected onset. Applies
+  // ONLY when energyOnsetFusionEnabled is on; "informed but not certain," needs live tuning.
+  lowConfidenceOnsetExtraSettleMs: number;
 }
 
 export const DEFAULT_SCORE_FOLLOWER_CONFIG: ScoreFollowerConfig = {
@@ -138,7 +233,17 @@ export const DEFAULT_SCORE_FOLLOWER_CONFIG: ScoreFollowerConfig = {
   implicitOnsetEnabled: true,
   implicitOnsetMinStableMs: 200,
   implicitOnsetStabilityToleranceSemitones: 1.5,
-  implicitOnsetClusterToleranceSemitones: 2.2
+  implicitOnsetClusterToleranceSemitones: 2.2,
+  fuzzySequenceMatchingEnabled: false,
+  fuzzySequenceMaxSkips: 1,
+  fuzzyInsertionMatchingEnabled: false,
+  adaptiveStabilityWindowEnabled: false,
+  adaptiveStabilityWindowFraction: 0.75,
+  adaptiveStabilityWindowFloorMs: 150,
+  tempoEstimateSampleCount: 4,
+  tempoEstimateMinQuarterNotes: 0.5,
+  energyOnsetFusionEnabled: false,
+  lowConfidenceOnsetExtraSettleMs: 100
 };
 
 interface PendingTransition {
@@ -157,13 +262,51 @@ interface PendingTransition {
   // "advance" only, since the very first note has no "drift away from what" reference to compare
   // against.
   source: "onset" | "implicit";
+  // Fusion confidence of the onset that opened/most-recently-extended this transition (see
+  // audio/captureModule/index.ts's flux/energy fusion) -- null for source "implicit" (that
+  // trigger has its own, unrelated confidence mechanism: a sustained hold over minStableMs) and
+  // for a real onset before energyOnsetFusionEnabled has any data to report. Drives
+  // extraSettleMs() below.
+  onsetConfidence: "high" | "low" | null;
 }
 
 interface SequenceMatch {
   // Offset (relative to the stale `current`, before any of this resync's notes were recorded)
   // where the matched sequence begins.
   startOffset: number;
+  // Offset of the score note the LAST element of the observed sequence actually landed on. Equal
+  // to startOffset + sequence.length - 1 for an exact (editDistance 0) match, but diverges for a
+  // fuzzy match: a deletion-tolerant match (the score has one note the player's onset detection
+  // never caught) lands one note further ahead than the naive length-based formula would predict,
+  // and an insertion-tolerant match (one observed reading was noise/a spurious re-articulation,
+  // not a real score note) lands one note short of it. commitAdvance uses this directly instead
+  // of re-deriving it from startOffset + length, since that formula is only valid for exact
+  // matches.
+  endOffset: number;
+  // 0 for an exact contiguous match. For a deletion-tolerant match, the actual number of score
+  // notes skipped to bridge the gap (1, 2, ... up to fuzzySequenceMaxSkips) -- every observed
+  // reading is still accounted for, just spread across more score notes than an exact match
+  // would use. INSERTION_EDIT_DISTANCE (see below) for an insertion-tolerant match (one observed
+  // reading is excluded as noise -- real evidence is discarded to make the rest fit), regardless
+  // of how few score notes were actually skipped. Deletion is deliberately ranked ahead of
+  // insertion always, not just at equal skip counts: a deletion match explains everything that
+  // was actually heard, while an insertion match throws part of it away, so it's weaker evidence
+  // even when it would nominally need fewer skips. This matters in practice -- when a repeated
+  // pitch elsewhere in the score makes one observed reading ambiguous on its own, insertion-
+  // tolerant matching can rediscover that same ambiguity by treating the OTHER reading as the
+  // noise, producing multiple insertion candidates that would otherwise tie with (or crowd out) a
+  // single, correct deletion candidate. Ranking insertion strictly worse means those degenerate
+  // its-own-noise interpretations never outcompete a genuine deletion match. See
+  // extendResyncSequence's best-tier filtering, which relies on this ordering (and on lower
+  // deletion skip counts ranking better than higher ones) to only treat same-tier candidates as
+  // real ambiguity.
+  editDistance: number;
 }
+
+// Sentinel editDistance for an insertion-tolerant match -- deliberately far larger than any
+// realistic fuzzySequenceMaxSkips value, so insertion NEVER outranks a deletion-tolerant match
+// regardless of how many notes that deletion match had to skip (see SequenceMatch.editDistance).
+export const INSERTION_EDIT_DISTANCE = 1000;
 
 export type ResyncTraceReason =
   | "next_note_immediate"
@@ -184,6 +327,29 @@ export interface ResyncTraceEntry {
   // window.__scoreFollower.getTrace(), see src/App.tsx) distinguish "the ordinary onset path is
   // still broken" from "the new implicit path is misfiring" during live diagnosis.
   triggerSource: "onset" | "implicit";
+  // SequenceMatch.editDistance of the match this decision was based on (0 exact, 1
+  // deletion-tolerant, 2 insertion-tolerant -- see SequenceMatch), when this decision came from
+  // findSequenceMatches() at all (sequence_confirmed, and the degenerate finalOffset===0 case of
+  // reattack_settled reached via extendResyncSequence). Null for next_note_immediate (the fast
+  // path never calls findSequenceMatches), the OTHER reattack_settled site (a direct pitch check
+  // in resolveAdvancePendingTransition, also no findSequenceMatches call), and deadline_expired.
+  // Exists to make a resync landing SHORT of the player's actual position (a match that only
+  // bridges a 1-note gap when the real gap was larger) diagnosable from the trace alone, instead
+  // of having to guess between "the edit-distance tolerance was insufficient" and other causes.
+  editDistance: number | null;
+  // Length of the observed-pitch sequence (outOfSyncSequence, including this reading) involved in
+  // this decision, when applicable (sequence_note_discarded, sequence_ambiguous,
+  // sequence_confirmed, and the degenerate reattack_settled case above). Null otherwise. Watching
+  // this climb across consecutive sequence_ambiguous entries without ever reaching
+  // sequence_confirmed is itself a signal that the real gap exceeds what fuzzy matching (or the
+  // resync window bounds) can bridge.
+  sequenceLength: number | null;
+  // Fusion confidence of the onset that opened/most-recently-extended the pending transition this
+  // decision resolves (see PendingTransition.onsetConfidence) -- null for triggerSource
+  // "implicit" (not applicable) or when no pending transition was involved. Lets a live session
+  // correlate "resolved slower/later than expected" with "it was a low-confidence onset that got
+  // extraSettleMsFor() patience," rather than guessing.
+  onsetConfidence: "high" | "low" | null;
 }
 
 function centsOff(frequencyHz: number, expectedFrequencyHz: number): number {
@@ -211,7 +377,8 @@ function createEmptyRecord(note: CursorNoteInfo): NoteAccuracyRecord {
     expectedFrequencyHz: note.primaryFrequencyHz ?? 0,
     centsOffSamples: [],
     averageCentsOff: null,
-    verdict: "not_played"
+    verdict: "not_played",
+    inferredFromRepeat: false
   };
 }
 
@@ -221,6 +388,7 @@ export class ScoreFollower {
   private status: ScoreFollowerStatus = "idle";
   private current: CursorNoteInfo | null = null;
   private liveCentsOffFromExpected: number | null = null;
+  private lastPitchReason: LivePitchFrame["reason"] = null;
   private history: NoteAccuracyRecord[] = [];
   private activeRecord: NoteAccuracyRecord | null = null;
   private currentNoteStartedAtMs = 0;
@@ -231,6 +399,12 @@ export class ScoreFollower {
   // several onsets' worth of pitches. Cleared on any confirmed commit (of any kind) or on a
   // discarded/noise reading that doesn't extend it. See extendResyncSequence().
   private outOfSyncSequence: number[] = [];
+  // Rolling buffer of recent (elapsed ms / notated quarter-note duration) samples, one per
+  // committed note transition -- see recordTempoSample()/estimateMsPerQuarterNote(). Recorded
+  // unconditionally (cheap bookkeeping) regardless of adaptiveStabilityWindowEnabled; only its
+  // USE (computeAdaptiveMinStableMs) is gated by the flag, so enabling the feature later doesn't
+  // start cold.
+  private recentMsPerQuarterNote: number[] = [];
   private readonly resyncTrace: ResyncTraceEntry[] = [];
   private readonly implicitOnsetWatcher: ImplicitOnsetWatcher;
   private readonly listeners = new Set<(state: ScoreFollowerState) => void>();
@@ -249,10 +423,12 @@ export class ScoreFollower {
     this.current = this.cursor.reset();
     this.status = this.current ? "awaiting_first_onset" : "completed";
     this.liveCentsOffFromExpected = null;
+    this.lastPitchReason = null;
     this.history = [];
     this.activeRecord = null;
     this.pendingTransition = null;
     this.outOfSyncSequence = [];
+    this.recentMsPerQuarterNote = [];
     this.resyncTrace.length = 0;
     this.implicitOnsetWatcher.reset();
     return this.emit();
@@ -262,6 +438,8 @@ export class ScoreFollower {
     if (this.status !== "awaiting_first_onset" && this.status !== "in_progress") {
       return this.getState();
     }
+
+    this.lastPitchReason = frame.reason;
 
     // Belt-and-suspenders against captureModule's own onset gating: a transition should never
     // start on a frame the rest of the UI is treating as silence, regardless of what upstream
@@ -275,15 +453,20 @@ export class ScoreFollower {
         // A fresh attack landed while still settling the previous one -- give it a new window
         // rather than letting the original deadline strand it. Deliberately does NOT reset
         // onsetMs -- attackSettleMs must keep gating off the original onset, not restart its
-        // clock every time a new onset extends the window.
-        this.pendingTransition.deadlineMs = frame.timestampMs + this.config.pendingTransitionWindowMs;
+        // clock every time a new onset extends the window. Confidence is re-derived from THIS
+        // extending frame (not the original), matching captureModule's own "latest onset wins"
+        // treatment of its pending-onset timestamp.
+        this.pendingTransition.onsetConfidence = frame.onsetConfidence;
+        this.pendingTransition.deadlineMs =
+          frame.timestampMs + this.config.pendingTransitionWindowMs + this.extraSettleMsFor(frame.onsetConfidence);
       } else {
         this.pendingTransition = {
           kind: this.status === "awaiting_first_onset" ? "start" : "advance",
           source: "onset",
           onsetMs: frame.timestampMs,
-          deadlineMs: frame.timestampMs + this.config.pendingTransitionWindowMs,
-          sequenceRecorded: false
+          deadlineMs: frame.timestampMs + this.config.pendingTransitionWindowMs + this.extraSettleMsFor(frame.onsetConfidence),
+          sequenceRecorded: false,
+          onsetConfidence: frame.onsetConfidence
         };
       }
     }
@@ -320,7 +503,8 @@ export class ScoreFollower {
             frame.frequencyHz,
             frame.timestampMs,
             frame.isSilent,
-            this.current.primaryFrequencyHz
+            this.current.primaryFrequencyHz,
+            this.config.adaptiveStabilityWindowEnabled ? this.computeAdaptiveMinStableMs() : undefined
           )
         : { triggered: false, stableSinceMs: null, hasActiveWindow: false };
 
@@ -330,7 +514,8 @@ export class ScoreFollower {
           source: "implicit",
           onsetMs: watcherResult.stableSinceMs,
           deadlineMs: frame.timestampMs + this.config.pendingTransitionWindowMs,
-          sequenceRecorded: false
+          sequenceRecorded: false,
+          onsetConfidence: null
         };
         return this.resolveAdvancePendingTransition(frame);
       }
@@ -387,11 +572,12 @@ export class ScoreFollower {
     const nextNote = this.cursor.peekNextNote();
     if (this.matchesExpectedPitch(frame.frequencyHz, nextNote?.primaryFrequencyHz ?? null)) {
       this.outOfSyncSequence = [];
-      this.commitAdvance(1, frame.timestampMs, frame.frequencyHz, "next_note_immediate", source);
+      this.commitAdvance(1, frame.timestampMs, frame.frequencyHz, "next_note_immediate", source, null, null, pending.onsetConfidence);
       return this.emit();
     }
 
-    const settled = frame.timestampMs - pending.onsetMs >= this.config.attackSettleMs;
+    const settled =
+      frame.timestampMs - pending.onsetMs >= this.config.attackSettleMs + this.extraSettleMsFor(pending.onsetConfidence);
 
     // Offset-0 / re-attack -- only eligible once settled. A match here is a no-op: stay on the
     // current note, but stop waiting out the rest of pendingTransitionWindowMs so ordinary cents
@@ -406,7 +592,10 @@ export class ScoreFollower {
         fromStepIndex: this.current?.stepIndex ?? null,
         toStepIndex: this.current?.stepIndex ?? null,
         detectedFrequencyHz: frame.frequencyHz,
-        triggerSource: source
+        triggerSource: source,
+        editDistance: null,
+        sequenceLength: null,
+        onsetConfidence: pending.onsetConfidence
       });
       this.pendingTransition = null;
       return this.getState();
@@ -419,7 +608,7 @@ export class ScoreFollower {
     if (settled && !pending.sequenceRecorded && frame.frequencyHz !== null) {
       pending.sequenceRecorded = true;
       this.pendingTransition = null;
-      this.extendResyncSequence(frame.frequencyHz, frame.timestampMs, source);
+      this.extendResyncSequence(frame.frequencyHz, frame.timestampMs, source, pending.onsetConfidence);
       return this.getState();
     }
 
@@ -434,7 +623,10 @@ export class ScoreFollower {
         fromStepIndex: this.current?.stepIndex ?? null,
         toStepIndex: this.current?.stepIndex ?? null,
         detectedFrequencyHz: frame.frequencyHz,
-        triggerSource: source
+        triggerSource: source,
+        editDistance: null,
+        sequenceLength: null,
+        onsetConfidence: pending.onsetConfidence
       });
       this.pendingTransition = null;
     }
@@ -452,7 +644,12 @@ export class ScoreFollower {
   // short sequence is a much stronger fingerprint, and the final commit offset lands on the LAST
   // note of the matched sequence (what the player just finished playing), so the player's next
   // onset lines up with the ordinary fast path immediately instead of still catching up.
-  private extendResyncSequence(frequencyHz: number, timestampMs: number, source: "onset" | "implicit"): void {
+  private extendResyncSequence(
+    frequencyHz: number,
+    timestampMs: number,
+    source: "onset" | "implicit",
+    onsetConfidence: "high" | "low" | null
+  ): void {
     const extended = [...this.outOfSyncSequence, frequencyHz];
     let sequence = extended;
     let candidates = this.findSequenceMatches(extended);
@@ -469,7 +666,10 @@ export class ScoreFollower {
           fromStepIndex: this.current?.stepIndex ?? null,
           toStepIndex: null,
           detectedFrequencyHz: frequencyHz,
-          triggerSource: source
+          triggerSource: source,
+          editDistance: null,
+          sequenceLength: extended.length,
+          onsetConfidence
         });
         return;
       }
@@ -477,7 +677,15 @@ export class ScoreFollower {
       candidates = solo;
     }
 
-    if (candidates.length > 1 && sequence.length < this.config.resyncMaxSequenceLength) {
+    // With fuzzy matching enabled, `candidates` can mix edit-distance tiers for the same buffer
+    // (e.g. one genuine deletion-tolerant match alongside several degenerate insertion-tolerant
+    // ones -- see SequenceMatch.editDistance). Only the BEST tier should count as real ambiguity:
+    // a worse-tier candidate coexisting with a unique best-tier one isn't genuine uncertainty,
+    // it's a weaker alternative explanation that should simply lose, not force more waiting.
+    const bestDistance = Math.min(...candidates.map((candidate) => candidate.editDistance));
+    const bestCandidates = candidates.filter((candidate) => candidate.editDistance === bestDistance);
+
+    if (bestCandidates.length > 1 && sequence.length < this.config.resyncMaxSequenceLength) {
       this.outOfSyncSequence = sequence;
       this.pushTrace({
         timestampMs,
@@ -486,14 +694,19 @@ export class ScoreFollower {
         fromStepIndex: this.current?.stepIndex ?? null,
         toStepIndex: null,
         detectedFrequencyHz: frequencyHz,
-        triggerSource: source
+        triggerSource: source,
+        editDistance: bestDistance,
+        sequenceLength: sequence.length,
+        onsetConfidence
       });
       return;
     }
 
-    const chosen = this.pickClosestSequenceMatch(candidates);
+    const chosen = this.pickClosestSequenceMatch(bestCandidates);
     this.outOfSyncSequence = [];
-    const finalOffset = chosen.startOffset + sequence.length - 1;
+    // endOffset (not startOffset + sequence.length - 1) -- only equivalent for an exact match;
+    // see SequenceMatch.endOffset's doc comment for why a fuzzy match's landing position diverges.
+    const finalOffset = chosen.endOffset;
 
     if (finalOffset === 0) {
       // Degenerate case: the matched sequence ends exactly back on the current note (e.g. the
@@ -506,20 +719,56 @@ export class ScoreFollower {
         fromStepIndex: this.current?.stepIndex ?? null,
         toStepIndex: this.current?.stepIndex ?? null,
         detectedFrequencyHz: frequencyHz,
-        triggerSource: source
+        triggerSource: source,
+        editDistance: chosen.editDistance,
+        sequenceLength: sequence.length,
+        onsetConfidence
       });
       return;
     }
 
-    this.commitAdvance(finalOffset, timestampMs, frequencyHz, "sequence_confirmed", source);
+    this.commitAdvance(
+      finalOffset,
+      timestampMs,
+      frequencyHz,
+      "sequence_confirmed",
+      source,
+      chosen.editDistance,
+      sequence.length,
+      onsetConfidence
+    );
   }
 
   // Searches every candidate start offset in [-resyncWindowBehind..resyncWindowAhead] for one
   // where the score's notes, read in order from that offset, match `sequence` pitch-for-pitch.
-  // Peeks enough of the window to cover the full sequence length from either edge.
+  // Peeks enough of the window to cover the full sequence length from either edge (plus extra
+  // room ahead, scaled by fuzzySequenceMaxSkips, when fuzzy matching is enabled -- a
+  // deletion-tolerant match's alignment can reach that many notes further than an exact match of
+  // the same length would; no extra room is needed behind, since matchSequenceWithSkips only ever
+  // walks forward from `start`).
+  //
+  // When fuzzySequenceMatchingEnabled, also searches a skip-tolerant alignment at each start
+  // offset that didn't already match exactly: the score has up to fuzzySequenceMaxSkips notes the
+  // player's onset detection never caught (a "deletion" from the observed sequence's perspective
+  // -- see matchSequenceWithSkips). This directly targets exact matching's documented fragility: a
+  // single missed reading anywhere in the window previously broke that candidate entirely, which
+  // is the diagnosed root cause behind resync resolving rarely on real playing. When ADDITIONALLY
+  // fuzzyInsertionMatchingEnabled, also tries the reverse: the observed sequence has one extra
+  // reading that isn't a real score note (an "insertion" -- spurious noise or a duplicate
+  // re-articulation; see sequenceMatchesWithInsertion and fuzzyInsertionMatchingEnabled's doc
+  // comment for why this is gated separately, stays single-skip-only, and defaults off). Only
+  // engages once sequence.length >= 2 -- at length 1 a "deletion" match is just an exact match
+  // some notes over (already covered by the exact loop at a different start), and "insertion"
+  // needs at least 2 elements to have anything left over after excluding one as noise.
   private findSequenceMatches(sequence: number[]): SequenceMatch[] {
     const length = sequence.length;
-    const ahead = this.config.resyncWindowAhead + length - 1;
+    const fuzzyEnabled = this.config.fuzzySequenceMatchingEnabled && length >= 2;
+    const insertionEnabled = fuzzyEnabled && this.config.fuzzyInsertionMatchingEnabled;
+    const maxSkips = fuzzyEnabled ? Math.max(0, this.config.fuzzySequenceMaxSkips) : 0;
+    const ahead = this.config.resyncWindowAhead + length - 1 + maxSkips;
+    // No extra behind padding needed for either fuzzy mode: matchSequenceWithSkips only ever
+    // walks forward from `start`, and insertion-tolerant matching's max reach (start+length-2) is
+    // already within the base length-1 term below.
     const behind = this.config.resyncWindowBehind + length - 1;
     const window = this.cursor.peekWindow(ahead, behind);
 
@@ -542,23 +791,116 @@ export class ScoreFollower {
         }
       }
       if (allMatch) {
-        matches.push({ startOffset: start });
+        matches.push({ startOffset: start, endOffset: start + length - 1, editDistance: 0 });
+        continue;
+      }
+
+      if (!fuzzyEnabled) {
+        continue;
+      }
+
+      const deletionMatch = maxSkips > 0 ? this.matchSequenceWithSkips(sequence, byOffset, start, maxSkips) : null;
+      if (deletionMatch) {
+        matches.push({ startOffset: start, endOffset: deletionMatch.endOffset, editDistance: deletionMatch.skipsUsed });
+      } else if (insertionEnabled && this.sequenceMatchesWithInsertion(sequence, byOffset, start)) {
+        matches.push({ startOffset: start, endOffset: start + length - 2, editDistance: INSERTION_EDIT_DISTANCE });
       }
     }
 
     return matches;
   }
 
-  // Prefers the smallest |startOffset|; on an exact tie, prefers forward -- an unforced,
-  // arbitrary choice (skipping ahead is assumed a more common real-world mistake than replaying a
-  // stale passage), easy to flip later.
+  // Greedily aligns `sequence` against the score starting at `start`, allowed to skip up to
+  // maxSkips score notes along the way -- i.e. the player's onset detection missed that many
+  // CONSECUTIVE (or scattered) notes, so they're simply absent from the observed sequence. Walks
+  // forward one score offset at a time: if it matches the current sequence element, consume it
+  // and advance to the next element; if not, spend one skip and try the next score offset,
+  // failing once skips run out before every element is matched. Greedy-earliest-match is standard
+  // for this class of subsequence problem and keeps the search linear in window size rather than
+  // exploring every possible skip placement -- unlike the old single-skip version, WHERE the
+  // skips land can change which score offset the last element lands on, so this returns the
+  // actual endOffset/skip count reached rather than leaving the caller to derive it from `length`
+  // alone (see SequenceMatch.endOffset's doc comment).
+  private matchSequenceWithSkips(
+    sequence: number[],
+    byOffset: ReadonlyMap<number, CursorNoteInfo>,
+    start: number,
+    maxSkips: number
+  ): { endOffset: number; skipsUsed: number } | null {
+    let scoreOffset = start;
+    let skipsUsed = 0;
+    let lastMatchedOffset = start - 1;
+
+    for (let i = 0; i < sequence.length; i += 1) {
+      let matched = false;
+      while (true) {
+        const note = byOffset.get(scoreOffset);
+        if (note && this.matchesExpectedPitch(sequence[i], note.primaryFrequencyHz)) {
+          lastMatchedOffset = scoreOffset;
+          scoreOffset += 1;
+          matched = true;
+          break;
+        }
+        if (skipsUsed >= maxSkips) {
+          break;
+        }
+        skipsUsed += 1;
+        scoreOffset += 1;
+      }
+      if (!matched) {
+        return null;
+      }
+    }
+
+    return { endOffset: lastMatchedOffset, skipsUsed };
+  }
+
+  // Mirror of sequenceMatchesWithDeletion: checks whether `sequence` aligns against the score
+  // starting at `start` if exactly one OBSERVED reading (at some position in the sequence) is
+  // excluded -- treated as noise or a spurious extra re-articulation rather than a real score
+  // note. The excluded reading itself is never pitch-checked against anything; only the remaining
+  // length-1 readings need to match.
+  private sequenceMatchesWithInsertion(
+    sequence: number[],
+    byOffset: ReadonlyMap<number, CursorNoteInfo>,
+    start: number
+  ): boolean {
+    const length = sequence.length;
+    for (let skip = 0; skip < length; skip += 1) {
+      let allMatch = true;
+      for (let i = 0; i < length; i += 1) {
+        if (i === skip) {
+          continue;
+        }
+        const scoreOffset = i < skip ? start + i : start + i - 1;
+        const note = byOffset.get(scoreOffset);
+        if (!note || !this.matchesExpectedPitch(sequence[i], note.primaryFrequencyHz)) {
+          allMatch = false;
+          break;
+        }
+      }
+      if (allMatch) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Prefers an exact match over a fuzzy one regardless of offset distance (fuzzy matching is a
+  // fallback for when exact matching finds nothing, not a replacement for it -- see
+  // SequenceMatch.editDistance). Among matches of equal editDistance, prefers the smallest
+  // |startOffset|; on an exact tie, prefers forward -- an unforced, arbitrary choice (skipping
+  // ahead is assumed a more common real-world mistake than replaying a stale passage), easy to
+  // flip later.
   private pickClosestSequenceMatch(candidates: SequenceMatch[]): SequenceMatch {
     let best = candidates[0];
     for (let i = 1; i < candidates.length; i += 1) {
       const candidate = candidates[i];
       if (
-        Math.abs(candidate.startOffset) < Math.abs(best.startOffset) ||
-        (Math.abs(candidate.startOffset) === Math.abs(best.startOffset) && candidate.startOffset > best.startOffset)
+        candidate.editDistance < best.editDistance ||
+        (candidate.editDistance === best.editDistance &&
+          (Math.abs(candidate.startOffset) < Math.abs(best.startOffset) ||
+            (Math.abs(candidate.startOffset) === Math.abs(best.startOffset) && candidate.startOffset > best.startOffset)))
       ) {
         best = candidate;
       }
@@ -573,10 +915,17 @@ export class ScoreFollower {
     timestampMs: number,
     detectedFrequencyHz: number | null,
     reason: ResyncTraceReason,
-    source: "onset" | "implicit"
+    source: "onset" | "implicit",
+    editDistance: number | null,
+    sequenceLength: number | null,
+    onsetConfidence: "high" | "low" | null
   ): void {
     const fromStepIndex = this.current?.stepIndex ?? null;
     this.pendingTransition = null;
+
+    // Must run before finalizeCurrentNote()/moving the cursor -- relies on this.current and
+    // this.currentNoteStartedAtMs still referring to the OUTGOING note.
+    this.recordTempoSample(timestampMs);
 
     // Capture the skipped-note window before finalizeCurrentNote()/moving the cursor, but push
     // the outgoing note's own record FIRST so history stays in chronological/positional order --
@@ -605,7 +954,10 @@ export class ScoreFollower {
       fromStepIndex,
       toStepIndex: landed?.stepIndex ?? null,
       detectedFrequencyHz,
-      triggerSource: source
+      triggerSource: source,
+      editDistance,
+      sequenceLength,
+      onsetConfidence
     });
 
     if (landed === null) {
@@ -648,7 +1000,8 @@ export class ScoreFollower {
       status: this.status,
       current: this.current,
       liveCentsOffFromExpected: this.liveCentsOffFromExpected,
-      history: this.history
+      history: this.history,
+      lastPitchReason: this.lastPitchReason
     };
   }
 
@@ -658,6 +1011,65 @@ export class ScoreFollower {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  // Records one (elapsed ms / notated quarter-note duration) sample for the outgoing note, using
+  // this.current/this.currentNoteStartedAtMs -- MUST be called before either is overwritten by
+  // the commit in progress. Guards against notes too short to trust (see
+  // tempoEstimateMinQuarterNotes's doc comment) and against a non-positive elapsed time (e.g. a
+  // resync landing offset 0, which never reaches here since commitAdvance is only called for a
+  // real advance/retreat, but defensive regardless).
+  private recordTempoSample(transitionTimestampMs: number): void {
+    if (!this.current || this.current.durationQuarterNotes < this.config.tempoEstimateMinQuarterNotes) {
+      return;
+    }
+
+    const elapsedMs = transitionTimestampMs - this.currentNoteStartedAtMs;
+    if (elapsedMs <= 0) {
+      return;
+    }
+
+    const impliedMsPerQuarterNote = elapsedMs / this.current.durationQuarterNotes;
+    this.recentMsPerQuarterNote.push(impliedMsPerQuarterNote);
+    if (this.recentMsPerQuarterNote.length > this.config.tempoEstimateSampleCount) {
+      this.recentMsPerQuarterNote.shift();
+    }
+  }
+
+  // Median of recentMsPerQuarterNote (median, not mean, for the same outlier-robustness reason as
+  // this codebase's other rolling estimators) -- null before any sample has been recorded (e.g.
+  // still on the very first note of the piece), in which case callers should fall back to a
+  // static default rather than treating null as zero.
+  private estimateMsPerQuarterNote(): number | null {
+    return median(this.recentMsPerQuarterNote);
+  }
+
+  // Tempo-scaled candidate for ImplicitOnsetWatcher's minStableMs, or undefined when there isn't
+  // enough information yet to compute one (no current note, a rest, or no tempo samples recorded
+  // yet) -- undefined tells the watcher to fall back to its own static constructor default rather
+  // than this method inventing a number from nothing. See
+  // ScoreFollowerConfig.adaptiveStabilityWindowFraction/FloorMs for what the scaling and floor
+  // actually mean.
+  private computeAdaptiveMinStableMs(): number | undefined {
+    if (!this.current || this.current.durationQuarterNotes <= 0) {
+      return undefined;
+    }
+
+    const msPerQuarterNote = this.estimateMsPerQuarterNote();
+    if (msPerQuarterNote === null) {
+      return undefined;
+    }
+
+    const expectedNoteDurationMs = this.current.durationQuarterNotes * msPerQuarterNote;
+    const scaled = expectedNoteDurationMs * this.config.adaptiveStabilityWindowFraction;
+    return Math.max(this.config.adaptiveStabilityWindowFloorMs, scaled);
+  }
+
+  // Extra settle/deadline time for a pending transition sourced from a "low" fusion-confidence
+  // onset, or 0 otherwise (high confidence, no confidence data, implicit source, or the feature
+  // disabled). See lowConfidenceOnsetExtraSettleMs's config doc comment.
+  private extraSettleMsFor(onsetConfidence: "high" | "low" | null): number {
+    return this.config.energyOnsetFusionEnabled && onsetConfidence === "low" ? this.config.lowConfidenceOnsetExtraSettleMs : 0;
   }
 
   // expectedFrequencyHz is null when there's nothing to validate against (e.g. peekNextNote()
@@ -695,6 +1107,29 @@ export class ScoreFollower {
         : Math.abs(averageCentsOff ?? 0) <= this.config.inTuneCentsThreshold
           ? "in_tune"
           : "out_of_tune";
+
+    // A note that got zero usable samples (would otherwise report as "not_played") but is an
+    // exact-pitch repeat of the immediately preceding, already-measured note inherits that note's
+    // verdict instead -- see NoteAccuracyRecord.inferredFromRepeat's doc comment for why. Exact
+    // frequency equality (not a semitone-tolerance comparison) is deliberate: both values come
+    // from the same CursorNoteInfo.primaryFrequencyHz computation for a written pitch, so a real
+    // repeat produces an exactly-equal float; this should never fuzzy-match two DIFFERENT written
+    // pitches that merely happen to be close. Looks at history's last entry (the chronologically
+    // preceding note), not stepIndex-1 -- correct for normal forward playing, though a prior
+    // backward resync could in principle make those differ (an existing, separately-documented
+    // out-of-scope case -- see history's own duplicate-stepIndex comment at commitAdvance).
+    if (this.activeRecord.centsOffSamples.length === 0) {
+      const previous = this.history[this.history.length - 1];
+      if (
+        previous &&
+        previous.verdict !== "not_played" &&
+        previous.expectedFrequencyHz === this.activeRecord.expectedFrequencyHz
+      ) {
+        this.activeRecord.averageCentsOff = previous.averageCentsOff;
+        this.activeRecord.verdict = previous.verdict;
+        this.activeRecord.inferredFromRepeat = true;
+      }
+    }
 
     this.history.push(this.activeRecord);
     this.activeRecord = null;

@@ -64,6 +64,15 @@ export interface CursorNoteInfo {
   // ScoreNote.pitch.
   pitchLabel: string | null;
   isRest: boolean;
+  // Notated duration in quarter-note units (e.g. 1.0 = quarter note, 0.5 = eighth, 2.0 = half) --
+  // NOT real time, and not "beats" in the time-signature sense (a 6/8 beat is a dotted quarter,
+  // not this unit). Matches score/schema.ts's ScoreNote.durationBeats convention (durationTicks /
+  // divisions, i.e. also quarter-note units) for consistency between the two note
+  // representations, even though this one is read directly off OSMD's Note.Length (a fraction of
+  // a WHOLE note) rather than derived from MusicXML ticks. Used by ScoreFollower to convert a
+  // tempo estimate (ms per quarter note) into an expected real-time duration for this note --
+  // see ScoreFollowerConfig.adaptiveStabilityWindowEnabled.
+  durationQuarterNotes: number;
 }
 
 export interface ScoreCursor {
@@ -118,7 +127,8 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
           frequenciesHz: notes.map((note) => note.Pitch.Frequency),
           primaryFrequencyHz: primary.Pitch.Frequency,
           pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
-          isRest: false
+          isRest: false,
+          durationQuarterNotes: primary.Length.RealValue * 4
         };
         return currentInfo;
       }
@@ -143,7 +153,8 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
           frequenciesHz: notes.map((note) => note.Pitch.Frequency),
           primaryFrequencyHz: primary.Pitch.Frequency,
           pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
-          isRest: false
+          isRest: false,
+          durationQuarterNotes: primary.Length.RealValue * 4
         };
         return currentInfo;
       }
@@ -195,7 +206,8 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
             frequenciesHz: notes.map((note) => note.Pitch.Frequency),
             primaryFrequencyHz: primary.Pitch.Frequency,
             pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
-            isRest: false
+            isRest: false,
+            durationQuarterNotes: primary.Length.RealValue * 4
           }
         });
       }
@@ -229,7 +241,8 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
             frequenciesHz: notes.map((note) => note.Pitch.Frequency),
             primaryFrequencyHz: primary.Pitch.Frequency,
             pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
-            isRest: false
+            isRest: false,
+            durationQuarterNotes: primary.Length.RealValue * 4
           }
         });
       }
@@ -305,7 +318,8 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
             frequenciesHz: notes.map((note) => note.Pitch.Frequency),
             primaryFrequencyHz: primary.Pitch.Frequency,
             pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
-            isRest: false
+            isRest: false,
+            durationQuarterNotes: primary.Length.RealValue * 4
           };
           break;
         }

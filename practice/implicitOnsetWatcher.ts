@@ -70,11 +70,19 @@ export class ImplicitOnsetWatcher {
   // referenceFrequencyHz is the CURRENT note's expected pitch -- what this watcher is trying to
   // detect drift AWAY from. Pass null (no current note, e.g. a rest or not yet started) to force
   // a reset; this frame contributes nothing.
+  //
+  // minStableMsOverride lets a caller (ScoreFollower, when adaptiveStabilityWindowEnabled) supply
+  // a per-call value -- e.g. tempo-scaled -- instead of the fixed one this watcher was
+  // constructed with. Falls back to the constructor config when omitted/undefined, so existing
+  // callers (and the offline harness) are unaffected. Deliberately a per-call parameter rather
+  // than mutable instance state: the "right" threshold can change every frame as the tempo
+  // estimate updates, and there's no reason for this class to own that recomputation itself.
   update(
     frequencyHz: number | null,
     timestampMs: number,
     isSilent: boolean,
-    referenceFrequencyHz: number | null
+    referenceFrequencyHz: number | null,
+    minStableMsOverride?: number
   ): ImplicitOnsetUpdateResult {
     if (isSilent || frequencyHz === null || referenceFrequencyHz === null) {
       this.reset();
@@ -113,7 +121,8 @@ export class ImplicitOnsetWatcher {
     }
 
     const stableSinceMs = this.run[0].timestampMs;
-    const triggered = timestampMs - stableSinceMs >= this.config.minStableMs;
+    const effectiveMinStableMs = minStableMsOverride ?? this.config.minStableMs;
+    const triggered = timestampMs - stableSinceMs >= effectiveMinStableMs;
     if (triggered) {
       this.reset();
     }

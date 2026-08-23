@@ -3,6 +3,7 @@
 import { PitchDetector, type PitchDetectionResult } from "../pitchDetector";
 import { calculateRms, applyBandPass } from "../preprocessing";
 import { OnsetDetector } from "../onsetDetector";
+import { EnergyOnsetDetector } from "../energyOnsetDetector";
 
 export interface PcmFrame {
   samples: Float32Array;
@@ -25,6 +26,15 @@ export interface StartCaptureOptions {
   smoothingWindowFrames?: number;
   expectedNoteWindowSemitones?: number;
   deviceId?: string;
+  // Kill switch for EnergyOnsetDetector actually CONTRIBUTING to onset firing (as opposed to just
+  // being computed) -- see processBufferedFrames. Off by default: without this, the energy
+  // detector would independently open/extend the SAME onset-confirmation window flux does,
+  // meaning either detector firing is enough to trigger an onset -- a real, not-purely-additive
+  // behavior change (more onset events overall) that needs its own opt-in and live validation,
+  // same as every other behavior-changing addition in this codebase. When off, onset firing is
+  // flux-only, byte-for-byte the same as before this detector existed, and onsetConfidence is
+  // always null (no fusion was attempted, not "low confidence").
+  energyOnsetDetectionEnabled?: boolean;
 }
 
 export interface LivePitchFrame {
@@ -40,6 +50,19 @@ export interface LivePitchFrame {
   // True only on the frame where a new onset was just detected (edge-triggered, already
   // debounced by OnsetDetector's minOnsetIntervalMs).
   onsetDetected: boolean;
+  // Mirrors PitchDetectionResult.reason (null instead of undefined when the frame produced a
+  // confident pitch) -- previously computed by PitchDetector but discarded here before reaching
+  // any consumer. Purely diagnostic for now: distinguishes *why* frequencyHz is null (silence vs.
+  // low_confidence vs. outside_expected_window vs. detector_no_pitch vs. outside_violin_range)
+  // instead of collapsing all of those into a single null. No decision logic reads this yet.
+  reason: PitchDetectionResult["reason"] | null;
+  // Only meaningful on the frame where onsetDetected is true. "high" when the spectral-flux
+  // (OnsetDetector) AND RMS-envelope (EnergyOnsetDetector) signals both fired within a small
+  // window of each other around this onset; "low" when only one of the two independently fired.
+  // null when onsetDetected is false. See processBufferedFrames' fusion logic for how this is
+  // computed -- always populated (computing it is cheap and additive), but
+  // practice/cursor.ts's ScoreFollower only acts on it when energyOnsetFusionEnabled is on.
+  onsetConfidence: "high" | "low" | null;
 }
 
 export interface CaptureErrorInfo {
@@ -92,6 +115,7 @@ const DEFAULT_HIGH_CUT_HZ = 3500;
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.6;
 const DEFAULT_SMOOTHING_WINDOW_FRAMES = 5;
 const DEFAULT_EXPECTED_NOTE_WINDOW_SEMITONES = 3;
+const DEFAULT_ENERGY_ONSET_DETECTION_ENABLED = false;
 const CALIBRATION_WINDOW_MS = 500;
 const WATCHDOG_LIVENESS_TIMEOUT_MS = 4000;
 // A flux-only onset spike and the pitch detector's own confidence don't necessarily land on the
@@ -104,6 +128,11 @@ const WATCHDOG_LIVENESS_TIMEOUT_MS = 4000;
 // pitch confirm it (mirrors practice/cursor.ts's pendingTransition retry) avoids permanently
 // losing an onset just because the two signals settled a frame or two apart.
 const ONSET_PITCH_CONFIRM_WINDOW_MS = 120;
+// How close together the spectral-flux and RMS-envelope detectors' most recent independent
+// firings need to be to count as corroborating the SAME physical attack, for fusion confidence
+// (see processBufferedFrames). Deliberately smaller than ONSET_PITCH_CONFIRM_WINDOW_MS -- this is
+// asking "are these plausibly the same instant," not "is there still time for pitch to catch up."
+const ENERGY_FUSION_WINDOW_MS = 50;
 // The noise gate is intentionally *relative* to each device's own measured noise floor rather than an
 // absolute constant: mic hardware sensitivity varies by orders of magnitude across devices (a quiet laptop
 // mic can read ~0.0001 RMS while playing loudly, versus ~0.05+ on a phone), and a fixed absolute floor here
@@ -141,6 +170,7 @@ interface CaptureConfig {
   smoothingWindowFrames: number;
   expectedNoteWindowSemitones: number;
   deviceId?: string;
+  energyOnsetDetectionEnabled: boolean;
 }
 
 function noteNameFromFrequency(frequencyHz: number): { note: string; centsOff: number } {
@@ -244,6 +274,8 @@ function createDefaultState(config: CaptureConfig): LiveCaptureState {
     rms: 0,
     isSilent: true,
     onsetDetected: false,
+    reason: null,
+    onsetConfidence: null,
     frameSize: config.frameSize,
     hopSize: config.hopSize,
     silenceRmsThreshold: config.silenceRmsThreshold,
@@ -266,7 +298,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     highCutHz: DEFAULT_HIGH_CUT_HZ,
     confidenceThreshold: DEFAULT_CONFIDENCE_THRESHOLD,
     smoothingWindowFrames: DEFAULT_SMOOTHING_WINDOW_FRAMES,
-    expectedNoteWindowSemitones: DEFAULT_EXPECTED_NOTE_WINDOW_SEMITONES
+    expectedNoteWindowSemitones: DEFAULT_EXPECTED_NOTE_WINDOW_SEMITONES,
+    energyOnsetDetectionEnabled: DEFAULT_ENERGY_ONSET_DETECTION_ENABLED
   };
 
   private audioContext: AudioContext | null = null;
@@ -277,10 +310,18 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   private workletModuleUrl: string | null = null;
   private detector: PitchDetector | null = null;
   private onsetDetector: OnsetDetector | null = null;
+  private energyOnsetDetector: EnergyOnsetDetector | null = null;
   private expectedFrequencyHz: number | null = null;
-  // Timestamp of the most recent flux-only onset spike still awaiting a confident pitch reading
-  // to confirm it -- see ONSET_PITCH_CONFIRM_WINDOW_MS below for why this exists.
-  private pendingOnsetFluxTimestampMs: number | null = null;
+  // Timestamp of the most recent flux- or energy-detected onset spike still awaiting a confident
+  // pitch reading to confirm it -- see ONSET_PITCH_CONFIRM_WINDOW_MS below for why this exists.
+  // Generalized from a flux-only field: either detector firing (re)sets this the same way, since
+  // either is independently sufficient evidence of a provisional attack worth confirming.
+  private pendingOnsetTimestampMs: number | null = null;
+  // Timestamp each detector most recently, independently fired at -- used only to compute fusion
+  // confidence at confirmation time (are both detectors' most recent firings close enough
+  // together to call them the SAME physical attack event?), not to gate onset detection itself.
+  private lastFluxOnsetMs: number | null = null;
+  private lastEnergyOnsetMs: number | null = null;
   private frameBuffer = new Float32Array(DEFAULT_FRAME_SIZE);
   private frameBufferLength = 0;
   private nextFrameStartSampleIndex = 0;
@@ -355,7 +396,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       confidenceThreshold: options.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD,
       smoothingWindowFrames: options.smoothingWindowFrames ?? DEFAULT_SMOOTHING_WINDOW_FRAMES,
       expectedNoteWindowSemitones: options.expectedNoteWindowSemitones ?? DEFAULT_EXPECTED_NOTE_WINDOW_SEMITONES,
-      deviceId: options.deviceId
+      deviceId: options.deviceId,
+      energyOnsetDetectionEnabled: options.energyOnsetDetectionEnabled ?? DEFAULT_ENERGY_ONSET_DETECTION_ENABLED
     };
 
     this.state = createDefaultState(this.config);
@@ -372,7 +414,9 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     this.gainScalar = 1;
     this.calibrationRmsSamples = [];
     this.expectedFrequencyHz = null;
-    this.pendingOnsetFluxTimestampMs = null;
+    this.pendingOnsetTimestampMs = null;
+    this.lastFluxOnsetMs = null;
+    this.lastEnergyOnsetMs = null;
     this.clearWatchdogTimer();
 
     const audioContextConstructor = getAudioContextConstructor();
@@ -559,7 +603,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
           confidenceThreshold: this.config.confidenceThreshold,
           smoothingWindowFrames: this.config.smoothingWindowFrames,
           expectedNoteWindowSemitones: this.config.expectedNoteWindowSemitones,
-          deviceId: this.config.deviceId
+          deviceId: this.config.deviceId,
+          energyOnsetDetectionEnabled: this.config.energyOnsetDetectionEnabled
         },
         this.callbacks
       );
@@ -616,6 +661,10 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       frameSize: ONSET_ANALYSIS_FRAME_SIZE,
       hopSize: this.config.hopSize
     });
+  }
+
+  private createEnergyOnsetDetector(): EnergyOnsetDetector {
+    return new EnergyOnsetDetector();
   }
 
   // Threshold is deliberately relative to *this device's* measured noise floor rather than an absolute
@@ -683,6 +732,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       };
       this.detector = this.createDetector(sampleRate, detectorThreshold);
       this.onsetDetector = this.createOnsetDetector(sampleRate);
+      this.energyOnsetDetector = this.createEnergyOnsetDetector();
       this.isCalibrating = false;
 
       this.emitState({
@@ -701,7 +751,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
   }
 
   private processBufferedFrames(sampleRate: number): void {
-    if (!this.detector || !this.onsetDetector || this.isStopping) {
+    if (!this.detector || !this.onsetDetector || !this.energyOnsetDetector || this.isStopping) {
       return;
     }
 
@@ -726,34 +776,65 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
         this.config.highCutHz
       );
       const onsetResult = this.onsetDetector.detect(onsetWindow, timestampMs);
+      // Same window, same RMS floor gate as flux below -- a second, independent read of the same
+      // signal rather than a competing one. See EnergyOnsetDetector's own doc comment for why
+      // this can catch attacks flux structurally underreacts to (e.g. a same-pitch
+      // re-articulation, where the spectral SHAPE barely changes but the loudness still jumps).
+      const energyOnsetResult = this.energyOnsetDetector.detect(calculateRms(onsetWindow), timestampMs);
 
       const detection = this.detector.detect({
         samples: this.applyGain(rawSamples),
         expectedFrequencyHz: this.expectedFrequencyHz ?? undefined
       });
-      // Spectral flux alone is not enough evidence of a real onset -- room noise, typing, and
-      // other non-violin sound can cross a flux threshold without ever producing a pitch the
-      // detector is confident in. Requiring the pitch detector's own gate + confidence threshold
-      // (detection.frequencyHz !== null) to also clear, within ONSET_PITCH_CONFIRM_WINDOW_MS of
-      // the flux spike rather than on that exact same frame, means an onset can only fire when a
-      // real, confidently-pitched sound is actually present -- this is what previously let a
-      // whole score complete on its own with nothing played: flux-only gating (plus a raw-RMS
-      // floor) was still permissive enough for ordinary room noise.
+      // Neither detector's raw signal alone is enough evidence of a real onset -- room noise,
+      // typing, and other non-violin sound can cross either threshold without ever producing a
+      // pitch the detector is confident in. Requiring the pitch detector's own gate + confidence
+      // threshold (detection.frequencyHz !== null) to also clear, within
+      // ONSET_PITCH_CONFIRM_WINDOW_MS of whichever detector fired rather than on that exact same
+      // frame, means an onset can only fire when a real, confidently-pitched sound is actually
+      // present -- this is what previously let a whole score complete on its own with nothing
+      // played: flux-only gating (plus a raw-RMS floor) was still permissive enough for ordinary
+      // room noise. Either detector independently firing (re)opens/extends the SAME pending
+      // window -- generalized from the old flux-only field, since either is independently
+      // sufficient provisional evidence.
       if (onsetResult.onset && rawRms >= this.calibratedSilenceRmsThreshold) {
-        this.pendingOnsetFluxTimestampMs = timestampMs;
+        this.pendingOnsetTimestampMs = timestampMs;
+        this.lastFluxOnsetMs = timestampMs;
+      }
+      // Gated: without this, the energy detector would independently open/extend the SAME
+      // pending window flux does, meaning EITHER detector firing is enough to trigger an onset --
+      // strictly more onset events than flux-only, not just an additive confidence readout. See
+      // StartCaptureOptions.energyOnsetDetectionEnabled's doc comment.
+      if (this.config.energyOnsetDetectionEnabled && energyOnsetResult.onset && rawRms >= this.calibratedSilenceRmsThreshold) {
+        this.pendingOnsetTimestampMs = timestampMs;
+        this.lastEnergyOnsetMs = timestampMs;
       }
 
       let onsetDetected = false;
-      if (this.pendingOnsetFluxTimestampMs !== null) {
-        const withinConfirmWindow = timestampMs - this.pendingOnsetFluxTimestampMs <= ONSET_PITCH_CONFIRM_WINDOW_MS;
+      let onsetConfidence: "high" | "low" | null = null;
+      if (this.pendingOnsetTimestampMs !== null) {
+        const withinConfirmWindow = timestampMs - this.pendingOnsetTimestampMs <= ONSET_PITCH_CONFIRM_WINDOW_MS;
         if (withinConfirmWindow && rawRms >= this.calibratedSilenceRmsThreshold && detection.frequencyHz !== null) {
           onsetDetected = true;
-          this.pendingOnsetFluxTimestampMs = null;
+          // Fusion confidence: "high" only if BOTH detectors' most recent independent firings are
+          // close enough together (ENERGY_FUSION_WINDOW_MS) to the moment this pending window
+          // opened to plausibly be the same physical attack -- not just "did either fire at some
+          // point," which would make every onset trivially "high" the instant both detectors have
+          // fired even once, arbitrarily far apart. null (not "low") when energy detection is off
+          // entirely -- no fusion was attempted, so there's nothing to rate the confidence of.
+          if (this.config.energyOnsetDetectionEnabled) {
+            const fluxRecent =
+              this.lastFluxOnsetMs !== null && Math.abs(this.pendingOnsetTimestampMs - this.lastFluxOnsetMs) <= ENERGY_FUSION_WINDOW_MS;
+            const energyRecent =
+              this.lastEnergyOnsetMs !== null && Math.abs(this.pendingOnsetTimestampMs - this.lastEnergyOnsetMs) <= ENERGY_FUSION_WINDOW_MS;
+            onsetConfidence = fluxRecent && energyRecent ? "high" : "low";
+          }
+          this.pendingOnsetTimestampMs = null;
         } else if (!withinConfirmWindow) {
-          this.pendingOnsetFluxTimestampMs = null;
+          this.pendingOnsetTimestampMs = null;
         }
       }
-      const liveFrame = this.toLiveFrame(detection, sampleRate, timestampMs, rawSamples, rawRms, onsetDetected);
+      const liveFrame = this.toLiveFrame(detection, sampleRate, timestampMs, rawSamples, rawRms, onsetDetected, onsetConfidence);
 
       this.emitState({
         status: this.audioContext?.state === "suspended" ? "suspended" : "listening",
@@ -767,6 +848,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
         rms: liveFrame.rms,
         isSilent: liveFrame.isSilent,
         onsetDetected: liveFrame.onsetDetected,
+        reason: liveFrame.reason,
+        onsetConfidence: liveFrame.onsetConfidence,
         silenceRmsThreshold: this.calibratedSilenceRmsThreshold,
         gainScalar: this.gainScalar,
         error: null
@@ -834,7 +917,8 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
     timestampMs: number,
     samples: Float32Array,
     rawRms: number,
-    onsetDetected: boolean
+    onsetDetected: boolean,
+    onsetConfidence: "high" | "low" | null
   ): LivePitchFrame {
     const isSilent = detection.reason === "silence" || rawRms < this.calibratedSilenceRmsThreshold;
 
@@ -849,7 +933,9 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
         confidence: detection.confidence,
         rms: rawRms,
         isSilent,
-        onsetDetected
+        onsetDetected,
+        reason: detection.reason ?? null,
+        onsetConfidence
       };
     }
 
@@ -864,7 +950,9 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
       confidence: detection.confidence,
       rms: rawRms,
       isSilent,
-      onsetDetected
+      onsetDetected,
+      reason: detection.reason ?? null,
+      onsetConfidence
     };
   }
 
@@ -936,6 +1024,7 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
 
     this.detector = null;
     this.onsetDetector = null;
+    this.energyOnsetDetector = null;
     this.frameBufferLength = 0;
     this.totalSamplesReceived = 0;
     this.nextFrameStartSampleIndex = 0;

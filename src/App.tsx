@@ -97,6 +97,25 @@ export default function App(): ReactElement {
   const [scoreCursor, setScoreCursor] = useState<ScoreCursor | null>(null);
   const [followerState, setFollowerState] = useState<ScoreFollowerState | null>(null);
   const [practiceMode, setPracticeMode] = useState<"off" | "active">("off");
+  // Dev-only toggle for ScoreFollowerConfig.fuzzySequenceMatchingEnabled (see practice/cursor.ts),
+  // defaulting off to match the config default. Lets Phase 1 of the resync/onset robustness plan
+  // be A/B tested live (via window.__scoreFollower.getTrace()) without editing code -- remove once
+  // fuzzy matching has been live-validated and the config default is flipped for real.
+  const [fuzzySequenceMatchingEnabled, setFuzzySequenceMatchingEnabled] = useState(false);
+  // Dev-only control for ScoreFollowerConfig.fuzzySequenceMaxSkips -- how many CONSECUTIVE missed
+  // notes a resync can bridge. Defaults to 1 (the originally-shipped, live-confirmed value);
+  // bumping this is what actually extends Phase 1 beyond its known single-note-gap boundary.
+  const [fuzzySequenceMaxSkips, setFuzzySequenceMaxSkips] = useState(1);
+  // Same dev-only pattern as above, for Phase 2's ScoreFollowerConfig.adaptiveStabilityWindowEnabled.
+  // Defaulted on: fast passages can contain notes shorter than the fixed 200ms implicit-hold
+  // window, which the implicit trigger structurally cannot catch in time -- this scales that
+  // window down per-note based on measured tempo instead.
+  const [adaptiveStabilityWindowEnabled, setAdaptiveStabilityWindowEnabled] = useState(true);
+  // Same dev-only pattern as above, for Phase 3's ScoreFollowerConfig.energyOnsetFusionEnabled.
+  // Defaulted on alongside the above: gives a pending transition extra settle time when the onset
+  // that opened it was low-confidence, so a fast run's weaker attacks are less likely to get cut
+  // off before a stable reading lands.
+  const [energyOnsetFusionEnabled, setEnergyOnsetFusionEnabled] = useState(true);
 
   useEffect(() => {
     const controller = controllerRef.current!;
@@ -170,7 +189,10 @@ export default function App(): ReactElement {
     try {
       await controller.start({
         ...LIVE_CAPTURE_OPTIONS,
-        deviceId: selectedDeviceId || undefined
+        deviceId: selectedDeviceId || undefined,
+        // Fixed at mic-start time like every other capture option here -- toggling the checkbox
+        // after the mic is already running requires a stop/start to take effect.
+        energyOnsetDetectionEnabled: energyOnsetFusionEnabled
       });
       const devices = await controller.listInputDevices();
       setInputDevices(devices);
@@ -194,7 +216,12 @@ export default function App(): ReactElement {
       return;
     }
 
-    const follower = new ScoreFollower(scoreCursor);
+    const follower = new ScoreFollower(scoreCursor, {
+      fuzzySequenceMatchingEnabled,
+      fuzzySequenceMaxSkips,
+      adaptiveStabilityWindowEnabled,
+      energyOnsetFusionEnabled
+    });
     followerRef.current = follower;
     follower.subscribe(setFollowerState);
     follower.start();
@@ -499,6 +526,60 @@ export default function App(): ReactElement {
 
               {practiceMode === "off" && captureState.status !== "listening" ? (
                 <p style={styles.diagnosticHint}>Start the microphone above to practice this score.</p>
+              ) : null}
+
+              {practiceMode === "off" ? (
+                <label style={styles.diagnosticHint}>
+                  <input
+                    type="checkbox"
+                    checked={fuzzySequenceMatchingEnabled}
+                    onChange={(event) => setFuzzySequenceMatchingEnabled(event.target.checked)}
+                  />{" "}
+                  Dev: fuzzy sequence matching (gap-tolerant resync, off by default -- see
+                  ScoreFollowerConfig.fuzzySequenceMatchingEnabled)
+                </label>
+              ) : null}
+
+              {practiceMode === "off" && fuzzySequenceMatchingEnabled ? (
+                <label style={styles.diagnosticHint}>
+                  Dev: max consecutive missed notes a resync can bridge{" "}
+                  <input
+                    type="number"
+                    min={1}
+                    max={5}
+                    value={fuzzySequenceMaxSkips}
+                    onChange={(event) => setFuzzySequenceMaxSkips(Math.max(1, Number(event.target.value) || 1))}
+                    style={{ width: "3em" }}
+                  />{" "}
+                  (default 1 -- see ScoreFollowerConfig.fuzzySequenceMaxSkips)
+                </label>
+              ) : null}
+
+              {practiceMode === "off" ? (
+                <label style={styles.diagnosticHint}>
+                  <input
+                    type="checkbox"
+                    checked={adaptiveStabilityWindowEnabled}
+                    onChange={(event) => setAdaptiveStabilityWindowEnabled(event.target.checked)}
+                  />{" "}
+                  Dev: adaptive stability window (tempo-scaled implicit-onset timing, off by
+                  default -- see ScoreFollowerConfig.adaptiveStabilityWindowEnabled)
+                </label>
+              ) : null}
+
+              {practiceMode === "off" ? (
+                <label style={styles.diagnosticHint}>
+                  <input
+                    type="checkbox"
+                    checked={energyOnsetFusionEnabled}
+                    onChange={(event) => setEnergyOnsetFusionEnabled(event.target.checked)}
+                  />{" "}
+                  Dev: energy onset fusion (adds a second onset detector + extra settle time on
+                  single-detector onsets, off by default -- see
+                  ScoreFollowerConfig.energyOnsetFusionEnabled). Takes effect on the NEXT
+                  microphone start, not while it's already running -- stop and restart the mic
+                  above after changing this.
+                </label>
               ) : null}
 
               {renderError ? <div style={styles.errorBox}>Could not render this score: {renderError}</div> : null}
