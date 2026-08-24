@@ -2,7 +2,7 @@ import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { applyAutomaticBeaming } from "./beamGrouping";
 import { createScoreCursor, type ScoreCursor } from "./scoreCursor";
 
-export type { CursorNoteInfo, ScoreCursor } from "./scoreCursor";
+export type { CursorNoteInfo, ScoreCursor, NoteHighlight } from "./scoreCursor";
 
 export interface RenderedScoreHandle {
   unmount(): void;
@@ -132,7 +132,15 @@ export async function renderScore(
   await osmd.load(xmlData);
   osmd.render();
 
-  const cursor = createScoreCursor(osmd.cursor);
+  // Pass an accessor, not osmd.cursor's current value -- OSMD's render() (called via redraw()
+  // below) silently replaces osmd.cursor with a brand-new Cursor instance every time
+  // (OpenSheetMusicDisplay.enableOrDisableCursors()), so a snapshot taken once here would go
+  // stale the first time highlightNotes() redraws. See the long comment in createScoreCursor().
+  //
+  // renderAndScrollBack() rather than plain render() -- highlightNotes() calls this after
+  // practice ends to pick up NoteheadColor changes, and a plain render() would jump the page
+  // scroll position back to the top of the sheet at that moment.
+  const cursor = createScoreCursor(() => osmd.cursor, () => osmd.renderAndScrollBack());
   cursor.hide();
 
   return {

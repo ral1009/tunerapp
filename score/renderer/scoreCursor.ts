@@ -75,6 +75,11 @@ export interface CursorNoteInfo {
   durationQuarterNotes: number;
 }
 
+export interface NoteHighlight {
+  stepIndex: number;
+  color: string;
+}
+
 export interface ScoreCursor {
   // Resets and positions the cursor at the first tickable note (auto-skipping any leading rests
   // or tie-continuation notes -- see isTickable()). Idempotent -- safe to call again to restart a
@@ -109,11 +114,32 @@ export interface ScoreCursor {
   show(): void;
   hide(): void;
   setHighlightColor(cssColor: string): void;
+  // Sets NoteheadColor on the underlying OSMD Note(s) at each given stepIndex and triggers a full
+  // sheet redraw (via the redraw callback passed to createScoreCursor) so the change is visible --
+  // NoteheadColor only takes effect on the next render, it isn't a live/cursor-position update
+  // like the rest of this interface. For end-of-session review coloring (out-of-tune/not-played),
+  // not for anything during live tracking. Walks the whole score from the front to locate each
+  // stepIndex (same isTickable walk as the rest of this file), then resets the iterator back to
+  // the front afterward -- doesn't touch or restore this cursor's own live position/stepIndex
+  // counter, since by the time this is called practice has already ended and a later
+  // ScoreFollower.start() calls reset() again before reusing this cursor anyway.
+  highlightNotes(highlights: NoteHighlight[]): void;
 }
 
-export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
+export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => void): ScoreCursor {
   let stepIndex = -1;
   let currentInfo: CursorNoteInfo | null = null;
+  // OSMD's render() (called by redraw(), e.g. from highlightNotes()) doesn't update the EXISTING
+  // Cursor object -- it silently replaces osmd.cursor with a brand-new instance every time
+  // (OpenSheetMusicDisplay.enableOrDisableCursors(), confirmed by reading the minified bundle:
+  // `this.cursors[t]=new Cursor(...)`, called from render()). OSMD does correctly restore
+  // hidden/iterator state onto that new instance (EngravingRules.RestoreCursorAfterRerender
+  // defaults to true), so the new cursor itself is fine -- but any PREVIOUSLY captured reference
+  // to the old Cursor object becomes silently inert: calling next()/show()/hide()/etc. on it no
+  // longer affects anything actually on screen, since OSMD moved on to a different object. Every
+  // method below re-fetches via getCursor() rather than closing over a single Cursor reference,
+  // so a highlightNotes() redraw mid-session can't orphan the rest of this cursor's operations.
+  let osmdCursor = getCursor();
 
   function landOnNextNonRestNote(): CursorNoteInfo | null {
     while (!osmdCursor.Iterator.EndReached) {
@@ -257,6 +283,7 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
 
   return {
     reset(): CursorNoteInfo | null {
+      osmdCursor = getCursor();
       stepIndex = -1;
       osmdCursor.reset();
       const info = landOnNextNonRestNote();
@@ -269,6 +296,7 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
     },
 
     isAtEnd(): boolean {
+      osmdCursor = getCursor();
       return osmdCursor.Iterator.EndReached;
     },
 
@@ -289,6 +317,7 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
       // exist, landing at/near the final barline before discovering there's nothing left --
       // update() would faithfully redraw the visual cursor there. Hide it instead of drawing a
       // stale, wrong position; a later reset()/show() (restarting practice) un-hides it.
+      osmdCursor = getCursor();
       const info = advanceOneNote();
       if (info === null) {
         osmdCursor.hide();
@@ -299,6 +328,7 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
     },
 
     peekNextNote(): CursorNoteInfo | null {
+      osmdCursor = getCursor();
       if (osmdCursor.Iterator.EndReached) {
         return null;
       }
@@ -341,6 +371,7 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
     },
 
     retreatToPreviousNote(): CursorNoteInfo | null {
+      osmdCursor = getCursor();
       const info = retreatOneNote();
       // Same forced-redraw/hide-at-the-edge reasoning as advanceToNextNote() above.
       if (info === null) {
@@ -362,6 +393,7 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
       // note search had already moved the real cursor forward looking for a note that doesn't
       // exist -- while the caller's own bookkeeping incorrectly still reported the old last note
       // as "current").
+      osmdCursor = getCursor();
       let lastValid: CursorNoteInfo | null = null;
       let stepsCompleted = 0;
       for (let i = 0; i < n; i += 1) {
@@ -387,6 +419,7 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
 
     retreatBy(n: number): CursorNoteInfo | null {
       // Mirror of advanceBy()'s clamp-to-last-valid and hide-at-the-edge reasoning above.
+      osmdCursor = getCursor();
       let lastValid: CursorNoteInfo | null = null;
       let stepsCompleted = 0;
       for (let i = 0; i < n; i += 1) {
@@ -407,6 +440,7 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
     },
 
     peekWindow(aheadCount: number, behindCount: number): Array<{ offset: number; note: CursorNoteInfo }> {
+      osmdCursor = getCursor();
       const ahead = peekAhead(Math.max(0, aheadCount));
       const behind = peekBehind(Math.max(0, behindCount));
       // Same forced-redraw reasoning as peekNextNote() above -- this does its own next()/
@@ -416,16 +450,45 @@ export function createScoreCursor(osmdCursor: OsmdCursor): ScoreCursor {
     },
 
     show(): void {
+      osmdCursor = getCursor();
       osmdCursor.show();
     },
 
     hide(): void {
+      osmdCursor = getCursor();
       osmdCursor.hide();
     },
 
     setHighlightColor(cssColor: string): void {
+      osmdCursor = getCursor();
       osmdCursor.CursorOptions = { ...osmdCursor.CursorOptions, color: cssColor };
       osmdCursor.update();
+    },
+
+    highlightNotes(highlights: NoteHighlight[]): void {
+      // Always walks and sets every tickable note's color, including to "" (OSMD's default/
+      // unset color) for anything NOT in the highlights map -- NOT a no-op-unless-something-to-
+      // color early return. Callers rely on this to clear a previous session's colors: passing []
+      // resets every note back to default, and passing a fresh highlight set implicitly clears
+      // whatever was set by an earlier call rather than layering on top of it.
+      osmdCursor = getCursor();
+      const colorByStepIndex = new Map(highlights.map((highlight) => [highlight.stepIndex, highlight.color]));
+
+      osmdCursor.reset();
+      let walkStepIndex = -1;
+      while (!osmdCursor.Iterator.EndReached) {
+        const notes = osmdCursor.NotesUnderCursor().filter(isTickable);
+        if (notes.length > 0) {
+          walkStepIndex += 1;
+          const color = colorByStepIndex.get(walkStepIndex) ?? "";
+          for (const note of notes) {
+            note.NoteheadColor = color;
+          }
+        }
+        osmdCursor.next();
+      }
+      osmdCursor.reset();
+      redraw();
     }
   };
 }

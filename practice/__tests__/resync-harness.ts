@@ -124,7 +124,8 @@ function createMockScoreCursor(frequencies: number[], durationsQuarterNotes?: nu
     },
     show(): void {},
     hide(): void {},
-    setHighlightColor(): void {}
+    setHighlightColor(): void {},
+    highlightNotes(): void {}
   };
 }
 

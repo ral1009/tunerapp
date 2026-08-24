@@ -2,14 +2,16 @@ import type { NoteAccuracyRecord } from "./cursor";
 
 export interface PracticeReviewSummary {
   unstableNoteIds: string[];
+  notPlayedNoteIds: string[];
   averageCentsError: number;
 }
 
-// unstableNoteIds are NoteAccuracyRecord.stepIndex values (session-local, not ScoreDocument ids --
-// persistence/cross-session note identity is out of scope for now).
+// unstableNoteIds/notPlayedNoteIds are NoteAccuracyRecord.stepIndex values (session-local, not
+// ScoreDocument ids -- persistence/cross-session note identity is out of scope for now).
 export function summarizePracticeSession(history: NoteAccuracyRecord[]): PracticeReviewSummary {
   const played = history.filter((record) => record.verdict !== "not_played");
   const unstable = played.filter((record) => record.verdict === "out_of_tune");
+  const notPlayed = history.filter((record) => record.verdict === "not_played");
   const averageCentsError =
     played.length === 0
       ? 0
@@ -17,6 +19,7 @@ export function summarizePracticeSession(history: NoteAccuracyRecord[]): Practic
 
   return {
     unstableNoteIds: unstable.map((record) => String(record.stepIndex)),
+    notPlayedNoteIds: notPlayed.map((record) => String(record.stepIndex)),
     averageCentsError
   };
 }

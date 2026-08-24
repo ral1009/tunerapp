@@ -8,7 +8,7 @@ import {
 } from "../audio/captureModule";
 import { importPhotoToScore, type OmrImportResult } from "../score/omrImport";
 import { importMusicXmlToScore } from "../score/musicxmlImport";
-import { renderScore, type RenderedScoreHandle, type ScoreCursor } from "../score/renderer";
+import { renderScore, type RenderedScoreHandle, type ScoreCursor, type NoteHighlight } from "../score/renderer";
 import { ScoreFollower, DEFAULT_SCORE_FOLLOWER_CONFIG, type ScoreFollowerState } from "../practice/cursor";
 import { summarizePracticeSession } from "../practice/reviewSummary";
 
@@ -57,6 +57,9 @@ function formatTempo(value: number | null): string {
 
   return `${value} BPM`;
 }
+
+const OUT_OF_TUNE_HIGHLIGHT_COLOR = "#ff4d4d";
+const NOT_PLAYED_HIGHLIGHT_COLOR = "#ffc94d";
 
 function statusLabel(status: LiveCaptureState["status"]): string {
   switch (status) {
@@ -116,6 +119,15 @@ export default function App(): ReactElement {
   // that opened it was low-confidence, so a fast run's weaker attacks are less likely to get cut
   // off before a stable reading lands.
   const [energyOnsetFusionEnabled, setEnergyOnsetFusionEnabled] = useState(true);
+  // Set by "Practice this score" when the mic isn't listening yet, so practicing can start
+  // automatically once calibration finishes instead of requiring a separate manual mic-start
+  // step first. Cleared once it fires (or the mic start fails) so a later unrelated mic restart
+  // doesn't unexpectedly auto-launch practice.
+  const [pendingAutoStartPractice, setPendingAutoStartPractice] = useState(false);
+  // Guards highlightNotes() from being called more than once for the same completed/stopped
+  // session (followerState updates repeatedly while status stays completed/stopped as long as
+  // the mic keeps posting frames). Reset to false at the start of each new practice session.
+  const highlightedSessionRef = useRef(false);
 
   useEffect(() => {
     const controller = controllerRef.current!;
@@ -179,6 +191,41 @@ export default function App(): ReactElement {
     }
   }, [captureState.status]);
 
+  useEffect(() => {
+    if (!pendingAutoStartPractice) {
+      return;
+    }
+    if (captureState.status === "listening") {
+      setPendingAutoStartPractice(false);
+      handleStartPracticing();
+    } else if (captureState.status === "error") {
+      // Mic start failed -- clear the pending flag rather than leaving it armed, or a later
+      // unrelated successful mic start would unexpectedly auto-launch practice.
+      setPendingAutoStartPractice(false);
+    }
+  }, [pendingAutoStartPractice, captureState.status]);
+
+  useEffect(() => {
+    if (!scoreCursor || !followerState || highlightedSessionRef.current) {
+      return;
+    }
+    if (followerState.status !== "completed" && followerState.status !== "stopped") {
+      return;
+    }
+    highlightedSessionRef.current = true;
+    const summary = summarizePracticeSession(followerState.history);
+    const highlights: NoteHighlight[] = [
+      ...summary.unstableNoteIds.map((id) => ({ stepIndex: Number(id), color: OUT_OF_TUNE_HIGHLIGHT_COLOR })),
+      ...summary.notPlayedNoteIds.map((id) => ({ stepIndex: Number(id), color: NOT_PLAYED_HIGHLIGHT_COLOR }))
+    ];
+    scoreCursor.highlightNotes(highlights);
+    // Back to "off" now that the session has actually ended (naturally or via End Practice) --
+    // this is also what hides the live "Current note"/"Intonation" readout below (gated on
+    // practiceMode === "active") and swaps the button back to "Practice this score", so both
+    // need this, not just the button.
+    setPracticeMode("off");
+  }, [followerState, scoreCursor]);
+
   async function handleStart(): Promise<void> {
     const controller = controllerRef.current;
     if (!controller) {
@@ -211,11 +258,28 @@ export default function App(): ReactElement {
     await controllerRef.current?.stop();
   }
 
+  // If the mic isn't listening yet, kick off a start and let the pendingAutoStartPractice effect
+  // above call handleStartPracticing() once calibration actually reaches "listening" -- starting
+  // the follower immediately would just fail the status check below and do nothing.
+  function handleRequestStartPracticing(): void {
+    if (captureState.status === "listening") {
+      handleStartPracticing();
+      return;
+    }
+    setPendingAutoStartPractice(true);
+    void handleStart();
+  }
+
   function handleStartPracticing(): void {
     if (!scoreCursor || captureState.status !== "listening") {
       return;
     }
 
+    highlightedSessionRef.current = false;
+    // Clear any red/yellow highlights left over from a previous session -- otherwise they'd sit
+    // on the score, misrepresenting THIS session, since highlightNotes() only runs again at the
+    // end of this new one.
+    scoreCursor.highlightNotes([]);
     const follower = new ScoreFollower(scoreCursor, {
       fuzzySequenceMatchingEnabled,
       fuzzySequenceMaxSkips,
@@ -238,6 +302,18 @@ export default function App(): ReactElement {
     followerRef.current?.stop();
     scoreCursor?.hide();
     setPracticeMode("off");
+  }
+
+  // User-initiated "End Practice" -- finalizes the in-progress note and shows the same
+  // completion summary/highlighting a naturally-finished piece gets (see the followerState.status
+  // "stopped" checks below), rather than silently abandoning the session like
+  // handleStopPracticing() (still used as-is by the automatic mic-disconnect safety net above,
+  // where popping up a summary doesn't make sense). Deliberately leaves practiceMode "active",
+  // matching how natural completion already behaves -- "Practice again" is the only way back in,
+  // same as today.
+  function handleEndPracticing(): void {
+    followerRef.current?.stop();
+    scoreCursor?.hide();
   }
 
   function handleDownloadMusicXml(): void {
@@ -509,24 +585,20 @@ export default function App(): ReactElement {
                   Download MusicXML
                 </button>
                 {practiceMode === "active" ? (
-                  <button type="button" style={styles.secondaryButton} onClick={handleStopPracticing}>
-                    Stop practicing
+                  <button type="button" style={styles.secondaryButton} onClick={handleEndPracticing}>
+                    End Practice
                   </button>
                 ) : (
                   <button
                     type="button"
                     style={styles.secondaryButton}
-                    onClick={handleStartPracticing}
-                    disabled={!scoreCursor || captureState.status !== "listening"}
+                    onClick={handleRequestStartPracticing}
+                    disabled={!scoreCursor || isStarting || pendingAutoStartPractice}
                   >
-                    Practice this score
+                    {pendingAutoStartPractice || isStarting ? "Starting microphone…" : "Practice this score"}
                   </button>
                 )}
               </div>
-
-              {practiceMode === "off" && captureState.status !== "listening" ? (
-                <p style={styles.diagnosticHint}>Start the microphone above to practice this score.</p>
-              ) : null}
 
               {practiceMode === "off" ? (
                 <label style={styles.diagnosticHint}>
@@ -601,11 +673,14 @@ export default function App(): ReactElement {
                 </div>
               ) : null}
 
-              {followerState?.status === "completed" ? (
+              {followerState?.status === "completed" || followerState?.status === "stopped" ? (
                 <div style={styles.importResult}>
                   <p style={styles.diagnosticHint}>
-                    Practice session complete — {sessionSummary.unstableNoteIds.length} note
+                    {followerState.status === "completed" ? "Practice session complete" : "Practice session ended"} —{" "}
+                    {sessionSummary.unstableNoteIds.length} note
                     {sessionSummary.unstableNoteIds.length === 1 ? "" : "s"} out of tune,{" "}
+                    {sessionSummary.notPlayedNoteIds.length} note
+                    {sessionSummary.notPlayedNoteIds.length === 1 ? "" : "s"} not played,{" "}
                     {sessionSummary.averageCentsError.toFixed(1)} cents average error.
                   </p>
                   <div style={styles.buttonRow}>
