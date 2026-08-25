@@ -1,4 +1,5 @@
 venv/
+.venv/
 rmvpe_env/
 __pycache__/
 .DS_Store
@@ -9,6 +10,7 @@ venv/
 __pycache__/
 .DS_Store
 node_modules/
+install_log.txt
 *.wav
 *.mp3
 *.npy
