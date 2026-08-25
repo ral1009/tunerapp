@@ -10,6 +10,7 @@ import { importPhotoToScore, type OmrImportResult } from "../score/omrImport";
 import { importMusicXmlToScore } from "../score/musicxmlImport";
 import { renderScore, type RenderedScoreHandle, type ScoreCursor, type NoteHighlight } from "../score/renderer";
 import { ScoreFollower, DEFAULT_SCORE_FOLLOWER_CONFIG, type ScoreFollowerState } from "../practice/cursor";
+import { MetronomeScoreFollower, DEFAULT_METRONOME_FOLLOWER_CONFIG } from "../practice/metronomeFollower";
 import { summarizePracticeSession } from "../practice/reviewSummary";
 
 type ImportState = "idle" | "loading" | "success" | "error";
@@ -96,10 +97,18 @@ export default function App(): ReactElement {
   const [renderError, setRenderError] = useState<string | null>(null);
   const scoreContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const followerRef = useRef<ScoreFollower | null>(null);
+  const followerRef = useRef<ScoreFollower | MetronomeScoreFollower | null>(null);
   const [scoreCursor, setScoreCursor] = useState<ScoreCursor | null>(null);
   const [followerState, setFollowerState] = useState<ScoreFollowerState | null>(null);
   const [practiceMode, setPracticeMode] = useState<"off" | "active">("off");
+  // Which mechanism drives cursor advancement during practice -- "listening" is the existing
+  // pitch/onset-driven ScoreFollower; "metronome" is MetronomeScoreFollower
+  // (practice/metronomeFollower.ts), a separate, simpler mode that advances purely on a
+  // user-chosen tempo and never looks at detected pitch/onsets to decide when to move. Added as
+  // an alternative, not a replacement, since pitch-based following isn't reliable live yet --
+  // see metronomeFollower.ts's header comment.
+  const [trackingMode, setTrackingMode] = useState<"listening" | "metronome">("listening");
+  const [metronomeBpm, setMetronomeBpm] = useState(90);
   // Dev-only toggle for ScoreFollowerConfig.fuzzySequenceMatchingEnabled (see practice/cursor.ts),
   // defaulting off to match the config default. Lets Phase 1 of the resync/onset robustness plan
   // be A/B tested live (via window.__scoreFollower.getTrace()) without editing code -- remove once
@@ -184,6 +193,12 @@ export default function App(): ReactElement {
       setPracticeMode("off");
     };
   }, [importState, importResult]);
+
+  useEffect(() => {
+    if (importResult?.score.tempoBpm) {
+      setMetronomeBpm(importResult.score.tempoBpm);
+    }
+  }, [importResult]);
 
   useEffect(() => {
     if (practiceMode === "active" && captureState.status !== "listening") {
@@ -280,22 +295,34 @@ export default function App(): ReactElement {
     // on the score, misrepresenting THIS session, since highlightNotes() only runs again at the
     // end of this new one.
     scoreCursor.highlightNotes([]);
-    const follower = new ScoreFollower(scoreCursor, {
-      fuzzySequenceMatchingEnabled,
-      fuzzySequenceMaxSkips,
-      adaptiveStabilityWindowEnabled,
-      energyOnsetFusionEnabled
-    });
+    // TEMPORARY diagnostic -- see whether the BPM the field shows actually matches what's about to
+    // be handed to the follower. Remove alongside the matching log in metronomeFollower.ts once the
+    // "still slow even at 300" report is resolved.
+    if (trackingMode === "metronome") {
+      console.debug(`[metronome] raw metronomeBpm state at practice-start: ${metronomeBpm}`);
+    }
+    const follower: ScoreFollower | MetronomeScoreFollower =
+      trackingMode === "metronome"
+        ? new MetronomeScoreFollower(scoreCursor, {
+            ...DEFAULT_METRONOME_FOLLOWER_CONFIG,
+            bpm: Math.min(300, Math.max(20, metronomeBpm || 90))
+          })
+        : new ScoreFollower(scoreCursor, {
+            fuzzySequenceMatchingEnabled,
+            fuzzySequenceMaxSkips,
+            adaptiveStabilityWindowEnabled,
+            energyOnsetFusionEnabled
+          });
     followerRef.current = follower;
     follower.subscribe(setFollowerState);
     follower.start();
     scoreCursor.show();
     setPracticeMode("active");
 
-    // TEMPORARY debug hook for live resync diagnosis -- run `__scoreFollower.getTrace()` in the
-    // browser console after a practice session to see the resync decision log. Remove once the
-    // resync algorithm is validated against real playing.
-    (window as unknown as { __scoreFollower?: ScoreFollower }).__scoreFollower = follower;
+    // TEMPORARY debug hook for live diagnosis -- run `__scoreFollower.getTrace()` (listening mode
+    // only; the metronome follower has no resync trace to inspect) in the browser console after a
+    // practice session. Remove once the resync algorithm is validated against real playing.
+    (window as unknown as { __scoreFollower?: ScoreFollower | MetronomeScoreFollower }).__scoreFollower = follower;
   }
 
   function handleStopPracticing(): void {
@@ -601,6 +628,53 @@ export default function App(): ReactElement {
               </div>
 
               {practiceMode === "off" ? (
+                <div style={styles.diagnosticHint}>
+                  Tracking mode:{" "}
+                  <label>
+                    <input
+                      type="radio"
+                      name="trackingMode"
+                      checked={trackingMode === "listening"}
+                      onChange={() => setTrackingMode("listening")}
+                    />{" "}
+                    Listening (pitch/onset-driven)
+                  </label>{" "}
+                  <label>
+                    <input
+                      type="radio"
+                      name="trackingMode"
+                      checked={trackingMode === "metronome"}
+                      onChange={() => setTrackingMode("metronome")}
+                    />{" "}
+                    Metronome (tempo-driven, no pitch tracking)
+                  </label>
+                </div>
+              ) : null}
+
+              {practiceMode === "off" && trackingMode === "metronome" ? (
+                <label style={styles.diagnosticHint}>
+                  Tempo{" "}
+                  <input
+                    type="number"
+                    min={20}
+                    max={300}
+                    value={metronomeBpm}
+                    // Deliberately does NOT clamp here -- clamping on every keystroke fought typing
+                    // itself: entering "300" digit-by-digit passes through "3" first, which a
+                    // same-keystroke clamp immediately snaps up to 20 (Math.max(20, 3)), overwriting
+                    // the field before a second digit could ever be typed. Clamp only once, on blur,
+                    // once the user is actually done editing; handleStartPracticing also clamps
+                    // defensively before constructing the follower regardless of blur.
+                    onChange={(event) => setMetronomeBpm(Number(event.target.value))}
+                    onBlur={() => setMetronomeBpm((value) => Math.min(300, Math.max(20, value || 20)))}
+                    style={{ width: "4em" }}
+                  />{" "}
+                  BPM -- the cursor advances on this clock alone; detected pitch is only compared
+                  against whatever note is currently scheduled, never used to decide when to move.
+                </label>
+              ) : null}
+
+              {practiceMode === "off" && trackingMode === "listening" ? (
                 <label style={styles.diagnosticHint}>
                   <input
                     type="checkbox"
@@ -612,7 +686,7 @@ export default function App(): ReactElement {
                 </label>
               ) : null}
 
-              {practiceMode === "off" && fuzzySequenceMatchingEnabled ? (
+              {practiceMode === "off" && trackingMode === "listening" && fuzzySequenceMatchingEnabled ? (
                 <label style={styles.diagnosticHint}>
                   Dev: max consecutive missed notes a resync can bridge{" "}
                   <input
@@ -627,7 +701,7 @@ export default function App(): ReactElement {
                 </label>
               ) : null}
 
-              {practiceMode === "off" ? (
+              {practiceMode === "off" && trackingMode === "listening" ? (
                 <label style={styles.diagnosticHint}>
                   <input
                     type="checkbox"
@@ -639,7 +713,7 @@ export default function App(): ReactElement {
                 </label>
               ) : null}
 
-              {practiceMode === "off" ? (
+              {practiceMode === "off" && trackingMode === "listening" ? (
                 <label style={styles.diagnosticHint}>
                   <input
                     type="checkbox"

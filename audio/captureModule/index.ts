@@ -857,13 +857,24 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
 
       this.callbacks.onFrame?.(liveFrame);
 
-      if (this.frameBufferLength === frameSize) {
-        this.frameBufferLength = 0;
-      } else {
-        this.frameBuffer.copyWithin(0, this.config.hopSize, this.frameBufferLength);
-        this.frameBufferLength -= this.config.hopSize;
-      }
-
+      // Always shift by exactly hopSize, retaining the (frameBufferLength - hopSize) trailing
+      // samples for the next overlapping analysis window -- there is no valid case where resetting
+      // to 0 instead is correct while hopSize < frameSize (true for every real config here: 512 vs.
+      // 2048/4096). A previous special case reset frameBufferLength to 0 whenever it was exactly
+      // frameSize -- which, given audio arrives in small fixed-size chunks (128-sample Web Audio
+      // render quantums) that evenly divide both hopSize and frameSize, was actually the path taken
+      // on nearly EVERY iteration, not a rare edge case. That silently discarded the frameSize -
+      // hopSize samples that should have carried over, meaning a full frameSize of new real audio
+      // had to arrive before the next analysis frame could run at all, while nextFrameStartSampleIndex
+      // (and therefore every LivePitchFrame.timestampMs in the pipeline) still only advanced by
+      // hopSize each time -- undercounting real elapsed time by exactly frameSize/hopSize (confirmed
+      // live: 8x, at analysisFrameSize=4096/hopSize=512 on a >=48kHz device). This silently distorted
+      // every timing-based decision downstream (onset confirmation windows, ScoreFollower's settle/
+      // deadline timers, tempo estimation, MetronomeScoreFollower's scheduling) for as long as this
+      // module has existed -- not just a MetronomeScoreFollower-specific bug, and not visible to the
+      // offline resync harness, which never touches this module at all.
+      this.frameBuffer.copyWithin(0, this.config.hopSize, this.frameBufferLength);
+      this.frameBufferLength -= this.config.hopSize;
       this.nextFrameStartSampleIndex += this.config.hopSize;
     }
   }

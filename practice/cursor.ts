@@ -352,7 +352,11 @@ export interface ResyncTraceEntry {
   onsetConfidence: "high" | "low" | null;
 }
 
-function centsOff(frequencyHz: number, expectedFrequencyHz: number): number {
+// Exported for practice/metronomeFollower.ts, which needs the exact same cents/median/verdict
+// math so the two tracking modes' NoteAccuracyRecord output stays directly comparable (same
+// ScoreFollowerState shape consumed by the same App.tsx UI -- see metronomeFollower.ts's own
+// header comment for why it duplicates none of this).
+export function centsOff(frequencyHz: number, expectedFrequencyHz: number): number {
   return 1200 * Math.log2(frequencyHz / expectedFrequencyHz);
 }
 
@@ -360,7 +364,7 @@ function semitoneDistance(frequencyAHz: number, frequencyBHz: number): number {
   return Math.abs(12 * Math.log2(frequencyAHz / frequencyBHz));
 }
 
-function median(values: number[]): number | null {
+export function median(values: number[]): number | null {
   if (values.length === 0) {
     return null;
   }
@@ -369,7 +373,7 @@ function median(values: number[]): number | null {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
-function createEmptyRecord(note: CursorNoteInfo): NoteAccuracyRecord {
+export function createEmptyRecord(note: CursorNoteInfo): NoteAccuracyRecord {
   return {
     stepIndex: note.stepIndex,
     measureIndex: note.measureIndex,
