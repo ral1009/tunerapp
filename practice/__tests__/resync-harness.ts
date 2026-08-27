@@ -41,7 +41,8 @@ function makeNote(stepIndex: number, freqHz: number, durationQuarterNotes = 1): 
     primaryFrequencyHz: freqHz,
     pitchLabel: `N${stepIndex}`,
     isRest: false,
-    durationQuarterNotes
+    durationQuarterNotes,
+    precedingRestQuarterNotes: 0
   };
 }
 

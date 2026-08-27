@@ -217,6 +217,53 @@ export interface ScoreFollowerConfig {
   // follows it, rather than treating it exactly like a confidently double-detected onset. Applies
   // ONLY when energyOnsetFusionEnabled is on; "informed but not certain," needs live tuning.
   lowConfidenceOnsetExtraSettleMs: number;
+  // Confidence (0-1) above which a pitch reading is trusted as real evidence toward a note's
+  // intonation score REGARDLESS of how far off it reads -- genuine severe mistuning is real
+  // evidence, not something to discard. Below this, isPlausibleReading() also requires the
+  // reading be within plausibilityLowConfidenceCentsLimit of the expected pitch. See that
+  // function's doc comment for the live bug this fixes: readings 1500-2000 cents off (well over
+  // an octave -- clearly noise/silence artifacts, not real playing) at low confidence were being
+  // counted as genuine mistuning, producing a false "out_of_tune" verdict on notes nobody played.
+  plausibilityHighConfidenceThreshold: number;
+  // Max plausible cents-off for a reading BELOW plausibilityHighConfidenceThreshold to still
+  // count as evidence toward the current note -- generous enough to cover real severe mistuning
+  // (a beginner fingering a note quite wrong is still evidence of THAT note), tight enough to
+  // exclude a reading that's essentially a different pitch entirely or outright noise. ~2.5
+  // semitones; "informed but not certain," not derived from anything rigorous.
+  plausibilityLowConfidenceCentsLimit: number;
+  // Hard ceiling, in cents, above which a reading is rejected REGARDLESS of confidence -- unlike
+  // plausibilityLowConfidenceCentsLimit, a high-confidence reading gets no exception here. 1000
+  // cents is most of an octave; nothing a violinist plays as "this note, just badly out of tune"
+  // is ever that far off -- a reading past this is essentially always a wrong note entirely, an
+  // octave-detection error, or noise (confirmed live: the metronome's own click, a clean tone the
+  // detector reads confidently, was still producing false "out_of_tune" verdicts even after
+  // clickMaskMs masking and the confidence-scaled check above -- this is the backstop for
+  // whatever gets past both of those, not a replacement for either).
+  plausibilityAbsoluteCentsLimit: number;
+}
+
+// A reading is trusted as real evidence toward a note's intonation score only if it's within
+// plausibilityAbsoluteCentsLimit of the expected pitch AND EITHER confidently detected, or --
+// when confidence is lower -- at least within plausibilityLowConfidenceCentsLimit. See
+// ScoreFollowerConfig.plausibilityHighConfidenceThreshold's and plausibilityAbsoluteCentsLimit's
+// doc comments for the live bugs this exists to fix. Shared between ScoreFollower and
+// MetronomeScoreFollower so both apply the exact same rule.
+export function isPlausibleReading(
+  frequencyHz: number,
+  confidence: number,
+  expectedFrequencyHz: number,
+  highConfidenceThreshold: number,
+  lowConfidenceCentsLimit: number,
+  absoluteCentsLimit: number
+): boolean {
+  const centsOffValue = Math.abs(centsOff(frequencyHz, expectedFrequencyHz));
+  if (centsOffValue > absoluteCentsLimit) {
+    return false;
+  }
+  if (confidence >= highConfidenceThreshold) {
+    return true;
+  }
+  return centsOffValue <= lowConfidenceCentsLimit;
 }
 
 export const DEFAULT_SCORE_FOLLOWER_CONFIG: ScoreFollowerConfig = {
@@ -243,7 +290,10 @@ export const DEFAULT_SCORE_FOLLOWER_CONFIG: ScoreFollowerConfig = {
   tempoEstimateSampleCount: 4,
   tempoEstimateMinQuarterNotes: 0.5,
   energyOnsetFusionEnabled: false,
-  lowConfidenceOnsetExtraSettleMs: 100
+  lowConfidenceOnsetExtraSettleMs: 100,
+  plausibilityHighConfidenceThreshold: 0.8,
+  plausibilityLowConfidenceCentsLimit: 250,
+  plausibilityAbsoluteCentsLimit: 1000
 };
 
 interface PendingTransition {
@@ -360,7 +410,7 @@ export function centsOff(frequencyHz: number, expectedFrequencyHz: number): numb
   return 1200 * Math.log2(frequencyHz / expectedFrequencyHz);
 }
 
-function semitoneDistance(frequencyAHz: number, frequencyBHz: number): number {
+export function semitoneDistance(frequencyAHz: number, frequencyBHz: number): number {
   return Math.abs(12 * Math.log2(frequencyAHz / frequencyBHz));
 }
 
@@ -524,7 +574,19 @@ export class ScoreFollower {
         return this.resolveAdvancePendingTransition(frame);
       }
 
-      if (this.current.primaryFrequencyHz !== null && frame.frequencyHz !== null && !frame.isSilent) {
+      if (
+        this.current.primaryFrequencyHz !== null &&
+        frame.frequencyHz !== null &&
+        !frame.isSilent &&
+        isPlausibleReading(
+          frame.frequencyHz,
+          frame.confidence,
+          this.current.primaryFrequencyHz,
+          this.config.plausibilityHighConfidenceThreshold,
+          this.config.plausibilityLowConfidenceCentsLimit,
+          this.config.plausibilityAbsoluteCentsLimit
+        )
+      ) {
         const cents = centsOff(frame.frequencyHz, this.current.primaryFrequencyHz);
         this.liveCentsOffFromExpected = cents;
 

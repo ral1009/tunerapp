@@ -48,6 +48,14 @@ function isTickable(note: Note): boolean {
   return !note.isRest() && !isTieContinuation(note) && !isSlurredSamePitchContinuation(note);
 }
 
+// Duration (quarter-note units) of a rest at this cursor position, or 0 if this position isn't
+// genuinely resting -- a tie/slur continuation is ALSO non-tickable, but isn't rest time, so this
+// only counts an actual note.isRest() position.
+function restDurationQuarterNotes(notes: readonly Note[]): number {
+  const restNote = notes.find((note) => note.isRest());
+  return restNote ? restNote.Length.RealValue * 4 : 0;
+}
+
 export interface CursorNoteInfo {
   // Monotonically increasing position counter for this render session only. NOT a ScoreDocument
   // note id, not stable across re-renders/sessions -- purely a same-session key for
@@ -73,6 +81,19 @@ export interface CursorNoteInfo {
   // tempo estimate (ms per quarter note) into an expected real-time duration for this note --
   // see ScoreFollowerConfig.adaptiveStabilityWindowEnabled.
   durationQuarterNotes: number;
+  // Total quarter-note duration of any rest(s) immediately preceding this note (0 if none) --
+  // ScoreCursor's forward walk silently skips over rest positions when finding the next tickable
+  // note, same as it always has (the pitch/onset-driven ScoreFollower never needed rest timing --
+  // a rest there just means no onset fires for a while, which its existing onset/implicit-drift
+  // machinery already tolerates). MetronomeScoreFollower's strictly clock-driven advancement DOES
+  // need this: without it, a rest's time was silently dropped from the schedule entirely, and the
+  // cursor advanced straight through it as though it didn't exist -- racing ahead of real time for
+  // the rest of the piece. Only accurate for the FORWARD walk (reset/advanceToNextNote/advanceBy/
+  // peekNextNote/peekAhead) -- the backward walk (retreatToPreviousNote/retreatBy/peekBehind)
+  // always reports 0 here, since nothing currently consuming those paths (ScoreFollower's resync)
+  // needs rest timing, and the correct backward value is semantically the rest AFTER this note in
+  // that direction, not before it -- attaching it here would be actively wrong, not just unused.
+  precedingRestQuarterNotes: number;
 }
 
 export interface NoteHighlight {
@@ -141,9 +162,41 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
   // so a highlightNotes() redraw mid-session can't orphan the rest of this cursor's operations.
   let osmdCursor = getCursor();
 
-  function landOnNextNonRestNote(): CursorNoteInfo | null {
+  // Immediately after landing on a tickable note, walks forward temporarily to accumulate the
+  // duration of any tie/same-pitch-slur continuation(s) that immediately follow it (and keeps
+  // going in case of a longer chain -- half tied to quarter tied to eighth, ...) -- this is what
+  // makes a tied note's DURATION reflect its full combined held length, not just the first note's
+  // own notated length. isTickable() already treats a tie as one continuous landing position, but
+  // without this the continuation's OWN duration was silently dropped from the schedule entirely
+  // (confirmed live: a dotted-half tied to a dotted-quarter -- 9 eighth notes total -- was only
+  // held for 6, exactly the dotted half's own length, with the tied dotted quarter's duration lost
+  // outright). Must be called with the cursor positioned exactly at the just-landed note -- always
+  // rewinds back to that same position before returning, since the real cursor position must
+  // remain wherever the caller found the landing.
+  function accumulateTiedContinuationQuarterNotes(): number {
+    let extra = 0;
+    let steps = 0;
     while (!osmdCursor.Iterator.EndReached) {
-      const notes = osmdCursor.NotesUnderCursor().filter(isTickable);
+      osmdCursor.next();
+      steps += 1;
+      const notesHere = osmdCursor.NotesUnderCursor();
+      const continuation = notesHere.find((note) => isTieContinuation(note) || isSlurredSamePitchContinuation(note));
+      if (!continuation) {
+        break;
+      }
+      extra += continuation.Length.RealValue * 4;
+    }
+    for (let i = 0; i < steps; i += 1) {
+      osmdCursor.previous();
+    }
+    return extra;
+  }
+
+  function landOnNextNonRestNote(): CursorNoteInfo | null {
+    let precedingRestQuarterNotes = 0;
+    while (!osmdCursor.Iterator.EndReached) {
+      const allNotes = osmdCursor.NotesUnderCursor();
+      const notes = allNotes.filter(isTickable);
       if (notes.length > 0) {
         stepIndex += 1;
         const primary = notes[0];
@@ -154,10 +207,12 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
           primaryFrequencyHz: primary.Pitch.Frequency,
           pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
           isRest: false,
-          durationQuarterNotes: primary.Length.RealValue * 4
+          durationQuarterNotes: primary.Length.RealValue * 4 + accumulateTiedContinuationQuarterNotes(),
+          precedingRestQuarterNotes
         };
         return currentInfo;
       }
+      precedingRestQuarterNotes += restDurationQuarterNotes(allNotes);
       osmdCursor.next();
     }
 
@@ -166,7 +221,9 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
   }
 
   // Mirror of landOnNextNonRestNote() walking backward -- decrements stepIndex instead of
-  // incrementing it, checks Iterator.FrontReached instead of EndReached.
+  // incrementing it, checks Iterator.FrontReached instead of EndReached. Always reports
+  // precedingRestQuarterNotes: 0 -- see CursorNoteInfo.precedingRestQuarterNotes's doc comment
+  // for why a backward walk can't correctly attribute rest time to the landed note.
   function landOnPreviousNonRestNote(): CursorNoteInfo | null {
     while (!osmdCursor.Iterator.FrontReached) {
       const notes = osmdCursor.NotesUnderCursor().filter(isTickable);
@@ -180,7 +237,8 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
           primaryFrequencyHz: primary.Pitch.Frequency,
           pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
           isRest: false,
-          durationQuarterNotes: primary.Length.RealValue * 4
+          durationQuarterNotes: primary.Length.RealValue * 4 + accumulateTiedContinuationQuarterNotes(),
+          precedingRestQuarterNotes: 0
         };
         return currentInfo;
       }
@@ -216,11 +274,13 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
     const results: Array<{ offset: number; note: CursorNoteInfo }> = [];
     let rawSteps = 0;
     let noteOffset = 0;
+    let precedingRestQuarterNotes = 0;
 
     while (noteOffset < count && !osmdCursor.Iterator.EndReached) {
       osmdCursor.next();
       rawSteps += 1;
-      const notes = osmdCursor.NotesUnderCursor().filter(isTickable);
+      const allNotes = osmdCursor.NotesUnderCursor();
+      const notes = allNotes.filter(isTickable);
       if (notes.length > 0) {
         noteOffset += 1;
         const primary = notes[0];
@@ -233,9 +293,13 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
             primaryFrequencyHz: primary.Pitch.Frequency,
             pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
             isRest: false,
-            durationQuarterNotes: primary.Length.RealValue * 4
+            durationQuarterNotes: primary.Length.RealValue * 4 + accumulateTiedContinuationQuarterNotes(),
+            precedingRestQuarterNotes
           }
         });
+        precedingRestQuarterNotes = 0;
+      } else {
+        precedingRestQuarterNotes += restDurationQuarterNotes(allNotes);
       }
     }
 
@@ -246,7 +310,9 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
     return results;
   }
 
-  // Mirror of peekAhead() walking backward -- returns notes tagged with negative offsets.
+  // Mirror of peekAhead() walking backward -- returns notes tagged with negative offsets. Always
+  // reports precedingRestQuarterNotes: 0 -- see CursorNoteInfo.precedingRestQuarterNotes's doc
+  // comment.
   function peekBehind(count: number): Array<{ offset: number; note: CursorNoteInfo }> {
     const results: Array<{ offset: number; note: CursorNoteInfo }> = [];
     let rawSteps = 0;
@@ -268,7 +334,8 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
             primaryFrequencyHz: primary.Pitch.Frequency,
             pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
             isRest: false,
-            durationQuarterNotes: primary.Length.RealValue * 4
+            durationQuarterNotes: primary.Length.RealValue * 4 + accumulateTiedContinuationQuarterNotes(),
+            precedingRestQuarterNotes: 0
           }
         });
       }
@@ -334,12 +401,14 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
       }
 
       let steps = 0;
+      let precedingRestQuarterNotes = 0;
       osmdCursor.next();
       steps += 1;
 
       let peeked: CursorNoteInfo | null = null;
       while (!osmdCursor.Iterator.EndReached) {
-        const notes = osmdCursor.NotesUnderCursor().filter(isTickable);
+        const allNotes = osmdCursor.NotesUnderCursor();
+        const notes = allNotes.filter(isTickable);
         if (notes.length > 0) {
           const primary = notes[0];
           peeked = {
@@ -349,10 +418,12 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
             primaryFrequencyHz: primary.Pitch.Frequency,
             pitchLabel: primary.Pitch.ToStringShort(OCTAVE_DISPLAY_OFFSET),
             isRest: false,
-            durationQuarterNotes: primary.Length.RealValue * 4
+            durationQuarterNotes: primary.Length.RealValue * 4 + accumulateTiedContinuationQuarterNotes(),
+            precedingRestQuarterNotes
           };
           break;
         }
+        precedingRestQuarterNotes += restDurationQuarterNotes(allNotes);
         osmdCursor.next();
         steps += 1;
       }

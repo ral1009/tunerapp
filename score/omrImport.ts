@@ -1,6 +1,6 @@
 import type { ScoreDocument } from "./schema";
 import { OMR_SERVER_BASE_URL } from "./serverConfig";
-import { importMusicXmlToScore } from "./musicxmlImport";
+import { importMusicXmlToScore, type MusicXmlImportOptions } from "./musicxmlImport";
 
 export interface OmrImportResult {
   score: ScoreDocument;
@@ -18,7 +18,7 @@ interface ParseSheetErrorResponse {
   error: string;
 }
 
-export async function importPhotoToScore(imageBytes: Uint8Array): Promise<OmrImportResult> {
+export async function importPhotoToScore(imageBytes: Uint8Array, options: MusicXmlImportOptions = {}): Promise<OmrImportResult> {
   const buffer = imageBytes.buffer.slice(imageBytes.byteOffset, imageBytes.byteOffset + imageBytes.byteLength) as ArrayBuffer;
   const formData = new FormData();
   formData.append("file", new Blob([buffer]), "upload.png");
@@ -44,7 +44,7 @@ export async function importPhotoToScore(imageBytes: Uint8Array): Promise<OmrImp
     throw new Error("Sheet parser returned an unexpected response.");
   }
 
-  const score: ScoreDocument = { ...(await importMusicXmlToScore(body.xmlData)), sourceType: "photo" };
+  const score: ScoreDocument = { ...(await importMusicXmlToScore(body.xmlData, options)), sourceType: "photo" };
 
   return { score, transientBoundingBoxes: [], xmlData: body.xmlData };
 }

@@ -1,5 +1,6 @@
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { applyAutomaticBeaming } from "./beamGrouping";
+import { applyTimeSignatureCorrection } from "./timeSignatureCorrection";
 import { createScoreCursor, type ScoreCursor } from "./scoreCursor";
 
 export type { CursorNoteInfo, ScoreCursor, NoteHighlight } from "./scoreCursor";
@@ -18,6 +19,11 @@ export interface ScoreRenderOptions {
   // metadata card never disagree.
   titleOverride?: string;
   composerOverride?: string;
+  // Dev-only toggle (see src/App.tsx): when a measure's actual duration doesn't match its time
+  // signature -- typically HOMR failing to detect a mid-piece meter change -- infer and insert a
+  // corrected <time> for that single measure before OSMD renders it. Off by default; see
+  // score/timeSignatureInference.ts for why the inference is inherently ambiguous.
+  autoCorrectTimeSignatures?: boolean;
 }
 
 // Rewrites <work-title> and <identification><creator type="composer"> (creating either if
@@ -122,10 +128,14 @@ export async function renderScore(
     drawComposer: options.drawComposer ?? true,
     onXMLRead: (xml: string) => {
       const withMetadata = applyMetadataOverrides(xml, options.titleOverride, options.composerOverride);
-      if (hasBeamData(withMetadata)) {
-        return withMetadata;
+      // Applied before the beam-data check below so any measure-level correction is what
+      // applyAutomaticBeaming (if it runs) computes beat groupings from -- otherwise a corrected
+      // meter could still get beamed as if it were the original, wrong one.
+      const withTimeSignatures = options.autoCorrectTimeSignatures ? applyTimeSignatureCorrection(withMetadata) : withMetadata;
+      if (hasBeamData(withTimeSignatures)) {
+        return withTimeSignatures;
       }
-      return applyAutomaticBeaming(stripStemHints(withMetadata));
+      return applyAutomaticBeaming(stripStemHints(withTimeSignatures));
     }
   });
 

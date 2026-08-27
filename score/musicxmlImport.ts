@@ -1,4 +1,5 @@
 import type { ScoreDocument, ScoreMeasure, ScoreNote } from "./schema";
+import { inferTimeSignature } from "./timeSignatureInference";
 
 const MAJOR_KEY_BY_FIFTHS: Record<number, string> = {
   [-7]: "Cb",
@@ -205,7 +206,17 @@ function resolveComposer(doc: Document, creditCandidates: CreditCandidate[], exc
   return composerCredit?.text ?? "";
 }
 
-export async function importMusicXmlToScore(xml: string): Promise<ScoreDocument> {
+export interface MusicXmlImportOptions {
+  // When a measure's actual note/rest duration doesn't match its time signature -- typically
+  // HOMR failing to detect a mid-piece meter change and carrying the previous one forward (see
+  // the mismatch warning below) -- infer and apply a corrected time signature for that single
+  // measure instead of just warning. Off by default: the inference is inherently ambiguous (see
+  // timeSignatureInference.ts) and shouldn't silently relabel a mismatch as a "meter change"
+  // without the caller opting in.
+  autoCorrectTimeSignatures?: boolean;
+}
+
+export async function importMusicXmlToScore(xml: string, options: MusicXmlImportOptions = {}): Promise<ScoreDocument> {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
 
   if (doc.querySelector("parsererror")) {
@@ -226,6 +237,13 @@ export async function importMusicXmlToScore(xml: string): Promise<ScoreDocument>
   let keySignature = "C";
   let timeSignature = "4/4";
   let tempoBpm: number | null = null;
+  // What score/renderer/timeSignatureCorrection.ts would call "effective": the time signature a
+  // MusicXML-sticky reader continues past this point given every genuine declaration AND every
+  // correction applied so far, as opposed to `timeSignature` (only ever updated by a real
+  // <attributes><time> in the source). Tracked so that once a corrected measure's meter no longer
+  // matches a later measure whose own duration fits the genuine signature again, that measure
+  // gets its own explicit reverting entry instead of silently inheriting the correction forever.
+  let effectiveTimeSignature = timeSignature;
 
   const measures: ScoreMeasure[] = Array.from(partElement.querySelectorAll("measure")).map((measureElement, measureIndex) => {
     const notes: ScoreNote[] = [];
@@ -322,20 +340,55 @@ export async function importMusicXmlToScore(xml: string): Promise<ScoreDocument>
       }
     }
 
-    const [beatsPerMeasure] = timeSignature.split("/").map((part) => Number.parseInt(part, 10));
-    const measureTotalBeats = positionDivisions / divisions;
-    if (Number.isFinite(beatsPerMeasure) && Math.abs(measureTotalBeats - beatsPerMeasure) > 0.01) {
-      console.warn(
-        `Measure ${measureIndex + 1}: parsed ${measureTotalBeats} beats but the time signature (${timeSignature}) expects ${beatsPerMeasure}. ` +
-          "The OMR source's MusicXML may be inaccurate for this measure."
-      );
+    const hasOwnTimeDeclaration = timeSignature !== timeSignatureBeforeMeasure;
+    if (hasOwnTimeDeclaration) {
+      // A real declaration in this measure always resets what a sticky reader sees from here,
+      // regardless of what an earlier correction left behind.
+      effectiveTimeSignature = timeSignature;
+    }
+
+    const [beatsPerMeasure, beatType] = timeSignature.split("/").map((part) => Number.parseInt(part, 10));
+    const measureTotalQuarterNotes = positionDivisions / divisions;
+    // beatsPerMeasure/beatType are in the time signature's own beat unit (e.g. eighth notes
+    // for X/8); measureTotalQuarterNotes is always quarter-note units, so convert before
+    // comparing or every correctly-parsed compound-meter (X/8) measure looks "wrong" by 2x.
+    const expectedQuarterNotes = Number.isFinite(beatsPerMeasure) && Number.isFinite(beatType) ? (beatsPerMeasure * 4) / beatType : NaN;
+    let correctedTimeSignature: string | null = null;
+    if (Number.isFinite(expectedQuarterNotes) && Math.abs(measureTotalQuarterNotes - expectedQuarterNotes) > 0.01) {
+      const inferred = options.autoCorrectTimeSignatures ? inferTimeSignature(measureTotalQuarterNotes, beatType) : null;
+      if (inferred) {
+        correctedTimeSignature = `${inferred.beats}/${inferred.beatType}`;
+        effectiveTimeSignature = correctedTimeSignature;
+        console.info(
+          `Measure ${measureIndex + 1}: auto-corrected time signature from ${timeSignature} to ${correctedTimeSignature} ` +
+            `(parsed ${measureTotalQuarterNotes} quarter-note beats).`
+        );
+      } else {
+        console.warn(
+          `Measure ${measureIndex + 1}: parsed ${measureTotalQuarterNotes} quarter-note beats but the time signature (${timeSignature}) expects ${expectedQuarterNotes}. ` +
+            "The OMR source's MusicXML may be inaccurate for this measure."
+        );
+      }
+    }
+
+    // This measure's own duration fits the genuine signature again, but a previous measure's
+    // correction is still the last thing a sticky reader would have seen -- write it back
+    // explicitly or this measure (and every one after it, until something else changes it) would
+    // silently inherit the earlier correction instead of the real meter.
+    const needsRevertWrite = !hasOwnTimeDeclaration && !correctedTimeSignature && effectiveTimeSignature !== timeSignature;
+    if (needsRevertWrite) {
+      effectiveTimeSignature = timeSignature;
     }
 
     const measure: ScoreMeasure = { index: measureIndex, notes };
     if (measureIndex === 0 || keySignature !== keySignatureBeforeMeasure) {
       measure.keySignature = keySignature;
     }
-    if (measureIndex === 0 || timeSignature !== timeSignatureBeforeMeasure) {
+    if (correctedTimeSignature) {
+      measure.timeSignature = correctedTimeSignature;
+    } else if (needsRevertWrite) {
+      measure.timeSignature = timeSignature;
+    } else if (measureIndex === 0 || hasOwnTimeDeclaration) {
       measure.timeSignature = timeSignature;
     }
     if (measureIndex === 0 || tempoBpm !== tempoBpmBeforeMeasure) {

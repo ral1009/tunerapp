@@ -11,6 +11,7 @@ import { importMusicXmlToScore } from "../score/musicxmlImport";
 import { renderScore, type RenderedScoreHandle, type ScoreCursor, type NoteHighlight } from "../score/renderer";
 import { ScoreFollower, DEFAULT_SCORE_FOLLOWER_CONFIG, type ScoreFollowerState } from "../practice/cursor";
 import { MetronomeScoreFollower, DEFAULT_METRONOME_FOLLOWER_CONFIG } from "../practice/metronomeFollower";
+import { createBeatClock, computeTimeSignatureSegments, type BeatClock, type ClickSubdivision } from "../practice/metronome";
 import { summarizePracticeSession } from "../practice/reviewSummary";
 
 type ImportState = "idle" | "loading" | "success" | "error";
@@ -96,11 +97,31 @@ export default function App(): ReactElement {
   const [importError, setImportError] = useState<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const scoreContainerRef = useRef<HTMLDivElement | null>(null);
+  // Dev-only toggle: when a measure's parsed duration doesn't match its time signature (usually
+  // HOMR missing a mid-piece meter change -- see musicxmlImport.ts's mismatch warning), infer and
+  // insert a corrected time signature for that single measure instead of just warning. Off by
+  // default -- the inference is ambiguous by nature (see score/timeSignatureInference.ts), so it
+  // shouldn't silently relabel every mismatch as a real meter change without opting in. Affects
+  // both the next import (ScoreDocument model) and, live, the rendered notation (renderScore
+  // effect below depends on this).
+  const [autoCorrectTimeSignatures, setAutoCorrectTimeSignatures] = useState(false);
 
   const followerRef = useRef<ScoreFollower | MetronomeScoreFollower | null>(null);
   const [scoreCursor, setScoreCursor] = useState<ScoreCursor | null>(null);
   const [followerState, setFollowerState] = useState<ScoreFollowerState | null>(null);
-  const [practiceMode, setPracticeMode] = useState<"off" | "active">("off");
+  // "counting_in" is the metronome-mode-only gap between clicking "Practice this score" and the
+  // follower actually starting -- see handleStartPracticing()'s count-in handling below. Listening
+  // mode never enters this state; it goes straight from "off" to "active".
+  const [practiceMode, setPracticeMode] = useState<"off" | "counting_in" | "active">("off");
+  // Mirrors practiceMode for the click player's onCountInComplete callback, which fires
+  // asynchronously (after a real-time delay) via a plain closure captured when the count-in
+  // started -- by the time it fires, that closure's own view of practiceMode is stale (state
+  // captured at call time), so it needs a ref to see whether the session was cancelled
+  // (End Practice / mic disconnect) in the meantime.
+  const practiceModeRef = useRef(practiceMode);
+  useEffect(() => {
+    practiceModeRef.current = practiceMode;
+  }, [practiceMode]);
   // Which mechanism drives cursor advancement during practice -- "listening" is the existing
   // pitch/onset-driven ScoreFollower; "metronome" is MetronomeScoreFollower
   // (practice/metronomeFollower.ts), a separate, simpler mode that advances purely on a
@@ -109,6 +130,28 @@ export default function App(): ReactElement {
   // see metronomeFollower.ts's header comment.
   const [trackingMode, setTrackingMode] = useState<"listening" | "metronome">("listening");
   const [metronomeBpm, setMetronomeBpm] = useState(90);
+  // Metronome-mode-only: whether the audible click continues for the whole practice session, not
+  // just the one-bar count-in before it starts. Off by default -- the count-in itself always
+  // plays regardless of this, since it's the "click throughout the piece" part specifically that
+  // was requested as an option, not the count-in.
+  const [metronomeClickThroughoutEnabled, setMetronomeClickThroughoutEnabled] = useState(false);
+  // Metronome-mode-only: see MetronomeFollowerConfig.bowAttackDetectionEnabled's doc comment. Off
+  // by default -- the cursor advances strictly on the beat clock's own schedule otherwise, with no
+  // dependency on detected pitch/onsets at all.
+  const [bowAttackDetectionEnabled, setBowAttackDetectionEnabled] = useState(false);
+  // What the audible click ticks on -- "auto" picks a musically conventional default from the
+  // score's time signature (plain quarter for simple meters, dotted quarter for compound meters
+  // like 6/8, 9/8, 12/8 -- see resolveClickSubdivision() in practice/metronome.ts). A fixed choice
+  // overrides that, for a piece phrased differently or a user preference.
+  const [clickSubdivision, setClickSubdivision] = useState<ClickSubdivision>("auto");
+  const beatClockRef = useRef<BeatClock | null>(null);
+  // Synchronous re-entrancy guard for handleStartPracticing() -- a plain `practiceMode !== "off"`
+  // check alone isn't reliable here: React state updates aren't visible in a closure until the
+  // NEXT render commits, so several rapid clicks landing before that commit (confirmed live under
+  // heavy jank -- see handleStartPracticing()'s comment) can all still read the stale "off" value
+  // and each construct their own BeatClock/follower. A ref is mutated immediately, with no render
+  // in between, so it closes that window even when React's own re-render is delayed.
+  const sessionStartingRef = useRef(false);
   // Dev-only toggle for ScoreFollowerConfig.fuzzySequenceMatchingEnabled (see practice/cursor.ts),
   // defaulting off to match the config default. Lets Phase 1 of the resync/onset robustness plan
   // be A/B tested live (via window.__scoreFollower.getTrace()) without editing code -- remove once
@@ -167,7 +210,8 @@ export default function App(): ReactElement {
 
     renderScore(importResult.xmlData, scoreContainerRef.current, {
       titleOverride: importResult.score.title,
-      composerOverride: importResult.score.composer || undefined
+      composerOverride: importResult.score.composer || undefined,
+      autoCorrectTimeSignatures
     })
       .then((resolvedHandle) => {
         if (cancelled) {
@@ -188,11 +232,14 @@ export default function App(): ReactElement {
       handle?.unmount();
       followerRef.current?.stop();
       followerRef.current = null;
+      beatClockRef.current?.stop();
+      beatClockRef.current = null;
+      sessionStartingRef.current = false;
       setScoreCursor(null);
       setFollowerState(null);
       setPracticeMode("off");
     };
-  }, [importState, importResult]);
+  }, [importState, importResult, autoCorrectTimeSignatures]);
 
   useEffect(() => {
     if (importResult?.score.tempoBpm) {
@@ -201,7 +248,7 @@ export default function App(): ReactElement {
   }, [importResult]);
 
   useEffect(() => {
-    if (practiceMode === "active" && captureState.status !== "listening") {
+    if (practiceMode !== "off" && captureState.status !== "listening") {
       handleStopPracticing();
     }
   }, [captureState.status]);
@@ -228,6 +275,18 @@ export default function App(): ReactElement {
       return;
     }
     highlightedSessionRef.current = true;
+    // Natural completion (piece ran out of notes) reaches "off" through THIS effect, not through
+    // handleStopPracticing()/handleEndPracticing() -- those only cover the user-initiated/
+    // mic-disconnect paths. Without this, a session with "click throughout practice" enabled that
+    // finishes on its own left the click playing forever, since nothing else here ever stops it.
+    beatClockRef.current?.stop();
+    beatClockRef.current = null;
+    // This is the ONLY place that resets practiceMode to "off" after a session that actually
+    // reached "active" (natural completion or End Practice both funnel through here -- see the
+    // comment below) -- sessionStartingRef must be cleared here too, or handleStartPracticing()'s
+    // re-entrancy guard (see its own doc comment) permanently blocks every future click after the
+    // very first session ends, since nothing else would ever clear it for this path.
+    sessionStartingRef.current = false;
     const summary = summarizePracticeSession(followerState.history);
     const highlights: NoteHighlight[] = [
       ...summary.unstableNoteIds.map((id) => ({ stepIndex: Number(id), color: OUT_OF_TUNE_HIGHLIGHT_COLOR })),
@@ -285,28 +344,16 @@ export default function App(): ReactElement {
     void handleStart();
   }
 
-  function handleStartPracticing(): void {
-    if (!scoreCursor || captureState.status !== "listening") {
+  // Actually constructs and starts the follower -- split out from handleStartPracticing() so
+  // metronome mode can defer this until the count-in bar actually finishes, while listening mode
+  // (no count-in) can call it immediately.
+  function beginFollowing(): void {
+    if (!scoreCursor) {
       return;
-    }
-
-    highlightedSessionRef.current = false;
-    // Clear any red/yellow highlights left over from a previous session -- otherwise they'd sit
-    // on the score, misrepresenting THIS session, since highlightNotes() only runs again at the
-    // end of this new one.
-    scoreCursor.highlightNotes([]);
-    // TEMPORARY diagnostic -- see whether the BPM the field shows actually matches what's about to
-    // be handed to the follower. Remove alongside the matching log in metronomeFollower.ts once the
-    // "still slow even at 300" report is resolved.
-    if (trackingMode === "metronome") {
-      console.debug(`[metronome] raw metronomeBpm state at practice-start: ${metronomeBpm}`);
     }
     const follower: ScoreFollower | MetronomeScoreFollower =
       trackingMode === "metronome"
-        ? new MetronomeScoreFollower(scoreCursor, {
-            ...DEFAULT_METRONOME_FOLLOWER_CONFIG,
-            bpm: Math.min(300, Math.max(20, metronomeBpm || 90))
-          })
+        ? new MetronomeScoreFollower(scoreCursor, { ...DEFAULT_METRONOME_FOLLOWER_CONFIG, bowAttackDetectionEnabled })
         : new ScoreFollower(scoreCursor, {
             fuzzySequenceMatchingEnabled,
             fuzzySequenceMaxSkips,
@@ -325,8 +372,97 @@ export default function App(): ReactElement {
     (window as unknown as { __scoreFollower?: ScoreFollower | MetronomeScoreFollower }).__scoreFollower = follower;
   }
 
+  function handleStartPracticing(): void {
+    // Without this, clicking "Practice this score" more than once while a session is already
+    // counting in or active (e.g. a few impatient clicks before the button visibly swaps to
+    // "Counting in… (cancel)") creates ANOTHER BeatClock -- its own AudioContext, setInterval
+    // scheduler, and eventual MetronomeScoreFollower -- on top of the one already running, since
+    // nothing here or in beginFollowing() ever stopped the previous one first. Confirmed live: a
+    // handful of rapid clicks produced several concurrent clocks/followers all independently
+    // advancing the SAME shared ScoreCursor, which is exactly what showed up as severe lag
+    // (browser "setTimeout handler took Nms" violations from Nx the scheduling work), the audible
+    // click glitching, and the visible cursor freezing/jumping (several independent
+    // advanceToNextNote() calls racing on one mutable OSMD cursor object). Checking BOTH
+    // practiceMode and sessionStartingRef -- see the ref's own doc comment for why the state check
+    // alone wasn't sufficient under real jank.
+    if (practiceMode !== "off" || sessionStartingRef.current) {
+      return;
+    }
+    if (!scoreCursor || captureState.status !== "listening") {
+      return;
+    }
+    sessionStartingRef.current = true;
+
+    highlightedSessionRef.current = false;
+    // Clear any red/yellow highlights left over from a previous session -- otherwise they'd sit
+    // on the score, misrepresenting THIS session, since highlightNotes() only runs again at the
+    // end of this new one.
+    scoreCursor.highlightNotes([]);
+
+    if (trackingMode !== "metronome") {
+      // No count-in outside metronome mode -- ScoreFollower doesn't have (or need) a fixed tempo
+      // to count in against.
+      beginFollowing();
+      return;
+    }
+
+    setPracticeMode("counting_in");
+    const bpm = Math.min(300, Math.max(20, metronomeBpm || 90));
+    // TEMPORARY diagnostic alongside the matching one in metronome.ts -- confirms the full
+    // per-measure meter sequence the clock is actually working from, not just the piece's opening
+    // signature. Remove once mid-piece meter changes are confirmed working live.
+    const timeSignatureSegments = computeTimeSignatureSegments(importResult?.score.measures ?? []);
+    console.debug(`[metronome] timeSignatureSegments: ${JSON.stringify(timeSignatureSegments)}`);
+    const beatClock = createBeatClock({ tempoBpm: bpm, timeSignatureSegments, clickSubdivision });
+    beatClockRef.current = beatClock;
+    beatClock.start({
+      continueClicking: metronomeClickThroughoutEnabled,
+      onCountInComplete: () => {
+        // The count-in itself may have been cancelled (End Practice / mic disconnect) before this
+        // fires -- only actually start the follower if we're still waiting on it.
+        if (practiceModeRef.current === "counting_in") {
+          beginFollowing();
+        }
+      },
+      // The metronome's own click plays through speakers, which the microphone can pick up as a
+      // clean, confidently-detected tone -- indistinguishable from a real note by pitch/confidence
+      // alone. Since we're the ones scheduling it, mask it out directly instead.
+      onClick: () => {
+        if (followerRef.current instanceof MetronomeScoreFollower) {
+          followerRef.current.notifyClickPlayed();
+        }
+      },
+      // The SAME scheduled event that (optionally) produces the audible click also advances the
+      // cursor here -- see BeatClockOptions.onTick's doc comment in practice/metronome.ts for why
+      // this replaced the old frame-timestamp-driven approach. followerRef.current is guaranteed
+      // set by the time any tick fires: onCountInComplete (which synchronously calls
+      // beginFollowing()) always runs before the first tick that could call this, from within the
+      // same beat-clock callback.
+      onTick: (quarterNotesElapsed) => {
+        if (followerRef.current instanceof MetronomeScoreFollower) {
+          followerRef.current.advanceOnTick(quarterNotesElapsed);
+        }
+      }
+    });
+  }
+
+  // Cancels the count-in specifically -- unlike handleStopPracticing()/handleEndPracticing(),
+  // there is no follower yet to stop (beginFollowing() hasn't run), and practiceMode needs to go
+  // straight back to "off" rather than staying at whatever handleEndPracticing's "leave it active
+  // for the summary" convention would otherwise imply (there's no session/summary to show for a
+  // count-in that never became a real practice attempt).
+  function handleCancelCountIn(): void {
+    beatClockRef.current?.stop();
+    beatClockRef.current = null;
+    sessionStartingRef.current = false;
+    setPracticeMode("off");
+  }
+
   function handleStopPracticing(): void {
     followerRef.current?.stop();
+    beatClockRef.current?.stop();
+    beatClockRef.current = null;
+    sessionStartingRef.current = false;
     scoreCursor?.hide();
     setPracticeMode("off");
   }
@@ -340,6 +476,8 @@ export default function App(): ReactElement {
   // same as today.
   function handleEndPracticing(): void {
     followerRef.current?.stop();
+    beatClockRef.current?.stop();
+    beatClockRef.current = null;
     scoreCursor?.hide();
   }
 
@@ -374,7 +512,7 @@ export default function App(): ReactElement {
 
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const result = await importPhotoToScore(bytes);
+      const result = await importPhotoToScore(bytes, { autoCorrectTimeSignatures });
       setImportResult(result);
       setImportState("success");
     } catch (err) {
@@ -398,7 +536,7 @@ export default function App(): ReactElement {
 
     try {
       const xmlData = await file.text();
-      const score = await importMusicXmlToScore(xmlData);
+      const score = await importMusicXmlToScore(xmlData, { autoCorrectTimeSignatures });
       setImportResult({ score, transientBoundingBoxes: [], xmlData });
       setImportState("success");
     } catch (err) {
@@ -578,6 +716,17 @@ export default function App(): ReactElement {
             </label>
           </div>
 
+          <label style={styles.diagnosticHint}>
+            <input
+              type="checkbox"
+              checked={autoCorrectTimeSignatures}
+              onChange={(event) => setAutoCorrectTimeSignatures(event.target.checked)}
+            />{" "}
+            Dev: auto-correct time signatures (when a bar's parsed beats don't match its time
+            signature -- usually a missed mid-piece meter change -- infer and insert a corrected
+            one for that bar, off by default; see score/timeSignatureInference.ts)
+          </label>
+
           {importState === "error" && importError ? <div style={styles.errorBox}>{importError}</div> : null}
 
           {importState === "success" && importResult ? (
@@ -614,6 +763,10 @@ export default function App(): ReactElement {
                 {practiceMode === "active" ? (
                   <button type="button" style={styles.secondaryButton} onClick={handleEndPracticing}>
                     End Practice
+                  </button>
+                ) : practiceMode === "counting_in" ? (
+                  <button type="button" style={styles.secondaryButton} onClick={handleCancelCountIn}>
+                    Counting in… (cancel)
                   </button>
                 ) : (
                   <button
@@ -671,6 +824,45 @@ export default function App(): ReactElement {
                   />{" "}
                   BPM -- the cursor advances on this clock alone; detected pitch is only compared
                   against whatever note is currently scheduled, never used to decide when to move.
+                </label>
+              ) : null}
+
+              {practiceMode === "off" && trackingMode === "metronome" ? (
+                <label style={styles.diagnosticHint}>
+                  <input
+                    type="checkbox"
+                    checked={metronomeClickThroughoutEnabled}
+                    onChange={(event) => setMetronomeClickThroughoutEnabled(event.target.checked)}
+                  />{" "}
+                  Click throughout practice, not just the one-bar count-in before it starts
+                </label>
+              ) : null}
+
+              {practiceMode === "off" && trackingMode === "metronome" ? (
+                <label style={styles.diagnosticHint}>
+                  <input
+                    type="checkbox"
+                    checked={bowAttackDetectionEnabled}
+                    onChange={(event) => setBowAttackDetectionEnabled(event.target.checked)}
+                  />{" "}
+                  Bow attack detection (let a real bow attack shift the note boundary early/late,
+                  off by default -- the cursor otherwise advances strictly on the beat, with no
+                  dependency on detected pitch/onsets at all)
+                </label>
+              ) : null}
+
+              {practiceMode === "off" && trackingMode === "metronome" ? (
+                <label style={styles.diagnosticHint}>
+                  Click subdivision{" "}
+                  <select
+                    value={clickSubdivision}
+                    onChange={(event) => setClickSubdivision(event.target.value as ClickSubdivision)}
+                  >
+                    <option value="auto">Auto (quarter, or dotted-quarter for 6/8, 9/8, 12/8, ...)</option>
+                    <option value="quarter">Quarter note</option>
+                    <option value="dottedQuarter">Dotted quarter (compound meter)</option>
+                    <option value="eighth">Eighth note</option>
+                  </select>
                 </label>
               ) : null}
 
