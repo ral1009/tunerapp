@@ -20,7 +20,7 @@ Use [sheet-music-tuner-plan.md](../sheet-music-tuner-plan.md) as the source of t
 
 ## Pipeline baseline
 
-- Violin-only frequency focus: 180Hz to 3.5kHz.
+- Violin-only frequency focus: ~80Hz to 3.5kHz.
 - Emit `no note` for silence or low-confidence frames.
 - Prefer correctness and stability over aggressive note guessing.
 
