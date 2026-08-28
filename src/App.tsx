@@ -8,6 +8,7 @@ import {
 } from "../audio/captureModule";
 import { importPhotoToScore, type OmrImportResult } from "../score/omrImport";
 import { importMusicXmlToScore } from "../score/musicxmlImport";
+import { applyNoteCorrectionsToXml } from "../score/correctionUI/noteXmlCorrection";
 import { renderScore, type RenderedScoreHandle, type ScoreCursor, type NoteHighlight } from "../score/renderer";
 import { ScoreFollower, DEFAULT_SCORE_FOLLOWER_CONFIG, type ScoreFollowerState } from "../practice/cursor";
 import { MetronomeScoreFollower, DEFAULT_METRONOME_FOLLOWER_CONFIG } from "../practice/metronomeFollower";
@@ -60,6 +61,24 @@ function formatTempo(value: number | null): string {
   return `${value} BPM`;
 }
 
+// Quarter-note-unit values, matching NOTE_TYPE_BY_QUARTER_NOTES in
+// score/correctionUI/noteXmlCorrection.ts -- only these land on a clean visual note glyph when
+// corrected; see that file's comment for why an off-list value still updates timing but not the
+// rendered symbol.
+const CORRECTION_DURATION_OPTIONS: Array<{ label: string; quarterNotes: number }> = [
+  { label: "Whole", quarterNotes: 4 },
+  { label: "Dotted half", quarterNotes: 3 },
+  { label: "Half", quarterNotes: 2 },
+  { label: "Dotted quarter", quarterNotes: 1.5 },
+  { label: "Quarter", quarterNotes: 1 },
+  { label: "Dotted eighth", quarterNotes: 0.75 },
+  { label: "Eighth", quarterNotes: 0.5 },
+  { label: "Dotted 16th", quarterNotes: 0.375 },
+  { label: "16th", quarterNotes: 0.25 },
+  { label: "32nd", quarterNotes: 0.125 },
+  { label: "64th", quarterNotes: 0.0625 }
+];
+
 const OUT_OF_TUNE_HIGHLIGHT_COLOR = "#ff4d4d";
 const NOT_PLAYED_HIGHLIGHT_COLOR = "#ffc94d";
 
@@ -105,6 +124,16 @@ export default function App(): ReactElement {
   // both the next import (ScoreDocument model) and, live, the rendered notation (renderScore
   // effect below depends on this).
   const [autoCorrectTimeSignatures, setAutoCorrectTimeSignatures] = useState(false);
+
+  // OMR/import correction panel (score/correctionUI/noteXmlCorrection.ts) -- "measureIndex:noteIndex"
+  // keying a single ScoreNote (see that file's header comment for why notes are addressed this
+  // way instead of by ScoreNote.id). Pitch/duration inputs represent "change to" and are left
+  // blank/unset by default, meaning "leave unchanged" -- not prefilled with the current value, so
+  // applying only touches what the user actually edited.
+  const [correctionNoteKey, setCorrectionNoteKey] = useState("");
+  const [correctionPitchInput, setCorrectionPitchInput] = useState("");
+  const [correctionDurationInput, setCorrectionDurationInput] = useState("");
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
 
   const followerRef = useRef<ScoreFollower | MetronomeScoreFollower | null>(null);
   const [scoreCursor, setScoreCursor] = useState<ScoreCursor | null>(null);
@@ -545,6 +574,61 @@ export default function App(): ReactElement {
     }
   }
 
+  const correctableNotes = importResult
+    ? importResult.score.measures.flatMap((measure, measureIndex) =>
+        measure.notes.map((note, noteIndex) => ({ measureIndex, noteIndex, note }))
+      )
+    : [];
+
+  function handleApplyNoteCorrection(): void {
+    if (!importResult) {
+      return;
+    }
+    setCorrectionError(null);
+
+    const [measureIndexText, noteIndexText] = correctionNoteKey.split(":");
+    const measureIndex = Number.parseInt(measureIndexText ?? "", 10);
+    const noteIndex = Number.parseInt(noteIndexText ?? "", 10);
+    if (!Number.isFinite(measureIndex) || !Number.isFinite(noteIndex)) {
+      setCorrectionError("Choose a note to correct first.");
+      return;
+    }
+
+    const trimmedPitch = correctionPitchInput.trim();
+    if (trimmedPitch && !/^[A-G](#|b)?\d{1,2}$/.test(trimmedPitch)) {
+      setCorrectionError("Pitch must look like C4, F#3, or Bb5.");
+      return;
+    }
+    const durationBeats = correctionDurationInput ? Number.parseFloat(correctionDurationInput) : null;
+    if (!trimmedPitch && durationBeats === null) {
+      setCorrectionError("Enter a corrected pitch and/or pick a corrected duration first.");
+      return;
+    }
+
+    const correctedXml = applyNoteCorrectionsToXml(importResult.xmlData, [
+      {
+        measureIndex,
+        noteIndexInMeasure: noteIndex,
+        pitch: trimmedPitch || undefined,
+        durationBeats: durationBeats ?? undefined
+      }
+    ]);
+
+    importMusicXmlToScore(correctedXml, { autoCorrectTimeSignatures })
+      .then((score) => {
+        setImportResult({
+          ...importResult,
+          score: { ...score, sourceType: importResult.score.sourceType },
+          xmlData: correctedXml
+        });
+        setCorrectionPitchInput("");
+        setCorrectionDurationInput("");
+      })
+      .catch((err) => {
+        setCorrectionError(err instanceof Error ? err.message : "Could not apply that correction.");
+      });
+  }
+
   const noteDisplay = captureState.isSilent || captureState.frequencyHz === null ? "No note" : captureState.note ?? "--";
   const pitchClass = captureState.isSilent ? "idle" : captureState.note ? "active" : "searching";
   const levelRatio = captureState.silenceRmsThreshold > 0 ? Math.min(1, captureState.rms / captureState.silenceRmsThreshold) : 0;
@@ -779,6 +863,47 @@ export default function App(): ReactElement {
                   </button>
                 )}
               </div>
+
+              {practiceMode === "off" && correctableNotes.length > 0 ? (
+                <div style={styles.correctionPanel}>
+                  <p style={styles.metaLabel}>Fix a misread note</p>
+                  <div style={styles.correctionRow}>
+                    <select
+                      value={correctionNoteKey || `${correctableNotes[0].measureIndex}:${correctableNotes[0].noteIndex}`}
+                      onChange={(event) => setCorrectionNoteKey(event.target.value)}
+                    >
+                      {correctableNotes.map(({ measureIndex, noteIndex, note }) => (
+                        <option key={`${measureIndex}:${noteIndex}`} value={`${measureIndex}:${noteIndex}`}>
+                          Measure {measureIndex + 1}, note {noteIndex + 1} — currently {note.pitch}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Corrected pitch (e.g. C#4)"
+                      value={correctionPitchInput}
+                      onChange={(event) => setCorrectionPitchInput(event.target.value)}
+                      style={{ width: "10em" }}
+                    />
+                    <select value={correctionDurationInput} onChange={(event) => setCorrectionDurationInput(event.target.value)}>
+                      <option value="">Don't change duration</option>
+                      {CORRECTION_DURATION_OPTIONS.map((option) => (
+                        <option key={option.label} value={option.quarterNotes}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" style={styles.secondaryButton} onClick={handleApplyNoteCorrection}>
+                      Apply
+                    </button>
+                  </div>
+                  <p style={styles.diagnosticHint}>
+                    Fixes what OMR misread on a single note (pitch and/or duration) — not a full notation editor. Pick the
+                    note, enter what it should be, and leave the other field blank to keep it as-is.
+                  </p>
+                  {correctionError ? <div style={styles.errorBox}>{correctionError}</div> : null}
+                </div>
+              ) : null}
 
               {practiceMode === "off" ? (
                 <div style={styles.diagnosticHint}>
@@ -1185,6 +1310,20 @@ const styles: Record<string, CSSProperties> = {
   },
   importResult: {
     marginTop: "18px"
+  },
+  correctionPanel: {
+    marginTop: "18px",
+    padding: "16px",
+    borderRadius: "16px",
+    background: "rgba(255, 255, 255, 0.03)",
+    border: "1px solid rgba(255, 255, 255, 0.08)"
+  },
+  correctionRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "10px",
+    alignItems: "center",
+    marginTop: "8px"
   },
   scoreContainer: {
     marginTop: "16px",
