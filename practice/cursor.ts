@@ -2,7 +2,16 @@ import type { CursorNoteInfo, ScoreCursor } from "../score/renderer/scoreCursor"
 import type { LivePitchFrame } from "../audio/captureModule";
 import { ImplicitOnsetWatcher } from "./implicitOnsetWatcher";
 
-export type NoteVerdict = "in_tune" | "out_of_tune" | "not_played";
+// "unmeasured" (post-take scoring only): the alignment placed the player on this note, but no
+// reading of it was reliable enough to grade -- typically a fast passage where the previous note or
+// an open string is still ringing. Distinct from "not_played" (never reached), because telling a
+// player they skipped a note they actually played is wrong. Tested against an independent pitch
+// tracker (pYIN) on real solo-violin recordings: it also failed to find the written pitch in most
+// of these notes, so they really can't be read from the audio.
+// "close" is only produced at summary time (practice/reviewSummary.ts's gradeTake): within the
+// close band but outside in-tune -- worth a look, not counted as a mistake. Followers themselves
+// only emit the other four.
+export type NoteVerdict = "in_tune" | "close" | "out_of_tune" | "not_played" | "unmeasured";
 
 export interface NoteAccuracyRecord {
   stepIndex: number;
@@ -25,7 +34,11 @@ export interface NoteAccuracyRecord {
   inferredFromRepeat: boolean;
 }
 
-export type ScoreFollowerStatus = "idle" | "awaiting_first_onset" | "in_progress" | "completed" | "stopped";
+// "scoring" is Matchmaker mode's gap between the take ending and its post-practice intonation
+// pass landing (see practice/offlineIntonationScorer.ts). Deliberately not terminal: App.tsx's
+// session-summary effect only acts on "completed"/"stopped", so it waits through this by
+// construction. The other followers never produce it.
+export type ScoreFollowerStatus = "idle" | "awaiting_first_onset" | "in_progress" | "scoring" | "completed" | "stopped";
 
 export interface ScoreFollowerState {
   status: ScoreFollowerStatus;

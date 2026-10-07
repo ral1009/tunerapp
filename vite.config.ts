@@ -10,20 +10,24 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 //    the FastAPI server happens in Vite's Node process, which browsers don't block.
 const OMR_SERVER_PROXY_TARGET = "http://localhost:8000";
 
+// Same reasoning as /api above, for the score-following WebSocket (/ws/align). `ws: true` is
+// required for Vite to proxy the upgrade handshake rather than treat it as a normal request; the
+// browser opens wss:// against Vite's own HTTPS origin, so no mixed-content block.
+const PROXY_ROUTES = {
+  "/api": { target: OMR_SERVER_PROXY_TARGET, changeOrigin: true },
+  "/ws": { target: OMR_SERVER_PROXY_TARGET, changeOrigin: true, ws: true }
+};
+
 export default defineConfig({
   plugins: [basicSsl()],
   server: {
     https: true,
     host: true,
-    proxy: {
-      "/api": { target: OMR_SERVER_PROXY_TARGET, changeOrigin: true }
-    }
+    proxy: PROXY_ROUTES
   },
   preview: {
     https: true,
     host: true,
-    proxy: {
-      "/api": { target: OMR_SERVER_PROXY_TARGET, changeOrigin: true }
-    }
+    proxy: PROXY_ROUTES
   }
 });

@@ -169,23 +169,7 @@ function estimateFrequencyInWindow(
   let bestCorrelation = -Infinity;
 
   for (let lag = minLag; lag <= maxLag; lag += 1) {
-    let corr = 0;
-    let energyA = 0;
-    let energyB = 0;
-
-    for (let index = 0; index < samples.length - lag; index += 1) {
-      const current = samples[index];
-      const shifted = samples[index + lag];
-      corr += current * shifted;
-      energyA += current * current;
-      energyB += shifted * shifted;
-    }
-
-    if (energyA === 0 || energyB === 0) {
-      continue;
-    }
-
-    const normalized = corr / Math.sqrt(energyA * energyB);
+    const normalized = normalizedCorrelationAtLag(samples, lag);
     if (normalized > bestCorrelation) {
       bestCorrelation = normalized;
       bestLag = lag;
@@ -197,9 +181,49 @@ function estimateFrequencyInWindow(
   }
 
   return {
-    frequencyHz: sampleRate / bestLag,
+    frequencyHz: sampleRate / refineLagParabolic(samples, bestLag, bestCorrelation),
     confidence: Math.max(0, Math.min(1, bestCorrelation))
   };
+}
+
+function normalizedCorrelationAtLag(samples: Float32Array, lag: number): number {
+  if (lag <= 0 || lag >= samples.length) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  let corr = 0;
+  let energyA = 0;
+  let energyB = 0;
+  for (let index = 0; index < samples.length - lag; index += 1) {
+    const current = samples[index];
+    const shifted = samples[index + lag];
+    corr += current * shifted;
+    energyA += current * current;
+    energyB += shifted * shifted;
+  }
+  if (energyA === 0 || energyB === 0) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  return corr / Math.sqrt(energyA * energyB);
+}
+
+// The lag search above only visits whole-sample lags, and sampleRate / lag is coarse at violin
+// pitches: at 48kHz, G4 sits at lag 122.45, so rounding to 122 reads +6.4 cents on a perfect tone,
+// and the error grows with pitch (half a lag step is ~865/lag cents). That bias landed directly in
+// the intonation grades against a 15-cent in-tune threshold. A parabola through the peak and its two
+// neighbours locates the true peak between samples -- the standard fix, the same thing YIN's own
+// "parabolic interpolation" step does.
+function refineLagParabolic(samples: Float32Array, lag: number, peak: number): number {
+  const left = normalizedCorrelationAtLag(samples, lag - 1);
+  const right = normalizedCorrelationAtLag(samples, lag + 1);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) {
+    return lag;
+  }
+  const curvature = left - 2 * peak + right;
+  if (curvature >= 0) {
+    return lag;
+  }
+  const offset = (0.5 * (left - right)) / curvature;
+  return Math.abs(offset) < 1 ? lag + offset : lag;
 }
 
 function estimateFrequencyAcrossRange(samples: Float32Array, sampleRate: number): { frequencyHz: number | null; confidence: number } {
@@ -228,7 +252,7 @@ export class PitchDetector {
   }
 
   detect(input: PitchDetectionInput): PitchDetectionResult {
-    const { gate, processed } = preprocessFrame(input.samples, this.config.preprocess);
+    const { gate, processed, filtered } = preprocessFrame(input.samples, this.config.preprocess);
     if (!gate.passed) {
       return {
         frequencyHz: null,
@@ -280,7 +304,7 @@ export class PitchDetector {
       }
     }
 
-    const yinFrequency = this.yin(processed);
+    const yinFrequency = this.yin(filtered);
     const usesFallbackEstimate =
       !yinFrequency ||
       !Number.isFinite(yinFrequency) ||

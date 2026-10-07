@@ -101,6 +101,14 @@ export interface NoteHighlight {
   color: string;
 }
 
+export interface QuarterIndexEntry {
+  // Quarter notes from the start of the score, read from OSMD's own iterator timestamp rather than
+  // accumulated from note durations -- OSMD already tracks absolute position, and re-deriving it
+  // by summing durations has to independently get rests, ties and pickup bars right.
+  quarter: number;
+  stepIndex: number;
+}
+
 export interface ScoreCursor {
   // Resets and positions the cursor at the first tickable note (auto-skipping any leading rests
   // or tie-continuation notes -- see isTickable()). Idempotent -- safe to call again to restart a
@@ -132,6 +140,20 @@ export interface ScoreCursor {
   // to behindCount tickable notes without moving the cursor (same walk-then-rewind technique).
   // An offset beyond the start/end of the score is simply omitted, not padded with null.
   peekWindow(aheadCount: number, behindCount: number): Array<{ offset: number; note: CursorNoteInfo }>;
+  // Maps each landable note's absolute position in the score (in quarter notes from the start) to
+  // its stepIndex, for callers that receive positions in musical time rather than note counts --
+  // see practice/matchmakerFollower.ts. Walks the whole score once and leaves the cursor reset at
+  // the front, so call it before a session starts, not during one.
+  buildQuarterIndex(): QuarterIndexEntry[];
+  // Moves to the landable note covering `quarter` (the last entry at or before it, so a position
+  // inside a rest or a tied continuation holds on the note that's still sounding). Returns null
+  // when the index is empty or the cursor can't reach the target.
+  seekToQuarter(index: readonly QuarterIndexEntry[], quarter: number): CursorNoteInfo | null;
+  // Every landable note in the score, in stepIndex order (so result[i].stepIndex === i). For
+  // callers that need each note's expected pitch without walking the live cursor -- see
+  // practice/offlineIntonationScorer.ts. Like buildQuarterIndex(), leaves the cursor reset at the
+  // front, so call it before or after a session, not during one.
+  listNotes(): CursorNoteInfo[];
   show(): void;
   hide(): void;
   setHighlightColor(cssColor: string): void;
@@ -506,6 +528,90 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
         osmdCursor.hide();
       } else {
         osmdCursor.update();
+      }
+      return currentInfo;
+    },
+
+    buildQuarterIndex(): QuarterIndexEntry[] {
+      osmdCursor = getCursor();
+      osmdCursor.reset();
+
+      const entries: QuarterIndexEntry[] = [];
+      let walkStepIndex = -1;
+      while (!osmdCursor.Iterator.EndReached) {
+        // Same isTickable filter as every other walk in this file, so the stepIndex counted here
+        // is the same one landOnNextNonRestNote() assigns -- a rest or tie continuation is not its
+        // own landing position in either.
+        if (osmdCursor.NotesUnderCursor().filter(isTickable).length > 0) {
+          walkStepIndex += 1;
+          entries.push({
+            // RealValue is in whole notes; x4 converts to the quarter-note units used throughout
+            // this codebase (CursorNoteInfo.durationQuarterNotes, ScoreNote.durationBeats).
+            quarter: osmdCursor.Iterator.currentTimeStamp.RealValue * 4,
+            stepIndex: walkStepIndex
+          });
+        }
+        osmdCursor.next();
+      }
+
+      // Leave the cursor where a caller would expect to begin: back at the first note, with this
+      // module's own stepIndex/currentInfo bookkeeping in agreement with it.
+      stepIndex = -1;
+      osmdCursor.reset();
+      landOnNextNonRestNote();
+      osmdCursor.update();
+      return entries;
+    },
+
+    listNotes(): CursorNoteInfo[] {
+      osmdCursor = getCursor();
+      stepIndex = -1;
+      osmdCursor.reset();
+
+      // The same landing/advance helpers live tracking uses, so each entry carries exactly what
+      // the live follower would have seen on that note -- including tied continuations folded
+      // into durationQuarterNotes.
+      const notes: CursorNoteInfo[] = [];
+      let info = landOnNextNonRestNote();
+      while (info) {
+        notes.push(info);
+        info = advanceOneNote();
+      }
+
+      stepIndex = -1;
+      osmdCursor.reset();
+      landOnNextNonRestNote();
+      osmdCursor.update();
+      return notes;
+    },
+
+    seekToQuarter(index: readonly QuarterIndexEntry[], quarter: number): CursorNoteInfo | null {
+      if (index.length === 0) {
+        return currentInfo;
+      }
+
+      let low = 0;
+      let high = index.length - 1;
+      let targetStepIndex = index[0].stepIndex;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (index[mid].quarter <= quarter) {
+          targetStepIndex = index[mid].stepIndex;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+
+      // Moves via advanceBy/retreatBy rather than driving the OSMD iterator directly: stepIndex and
+      // currentInfo are this module's own bookkeeping, and stepping the iterator behind their back
+      // desyncs them silently.
+      const delta = targetStepIndex - stepIndex;
+      if (delta > 0) {
+        return this.advanceBy(delta);
+      }
+      if (delta < 0) {
+        return this.retreatBy(-delta);
       }
       return currentInfo;
     },

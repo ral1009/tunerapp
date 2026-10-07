@@ -132,15 +132,20 @@ export function applyHannWindow(samples: Float32Array): Float32Array {
 export function preprocessFrame(samples: Float32Array, config: PreprocessConfig = DEFAULT_PREPROCESS_CONFIG): {
   gate: NoiseGateResult;
   processed: Float32Array;
+  // Band-passed but NOT windowed. Time-domain pitch estimators (YIN) assume a stationary frame; a
+  // Hann taper breaks that, and YIN on the windowed frame failed outright on about half the violin
+  // range (returning a frequency outside the detectable band, which forced the fallback path).
+  filtered: Float32Array;
 } {
   const filtered = applyBandPass(samples, config.sampleRate, config.lowCutHz, config.highCutHz);
   const gate = applyNoiseGate(filtered, config.silenceRmsThreshold);
   if (!gate.passed) {
-    return { gate, processed: new Float32Array(samples.length) };
+    return { gate, processed: new Float32Array(samples.length), filtered };
   }
 
   return {
     gate,
-    processed: applyHannWindow(filtered)
+    processed: applyHannWindow(filtered),
+    filtered
   };
 }

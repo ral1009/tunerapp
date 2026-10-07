@@ -99,6 +99,10 @@ export interface MicrophoneCaptureController {
   // PitchDetector's existing expectedFrequencyHz mechanism. Safe to call at any time; takes
   // effect starting with the next processed frame.
   setExpectedFrequencyHz(frequencyHz: number | null): void;
+  // The live microphone stream, or null when not capturing. Exposed so a second consumer can clone
+  // it (see audio/matchmakerStream.ts) instead of calling getUserMedia again -- one permission
+  // prompt, one device, and no risk of the two consumers ending up on different inputs.
+  getMediaStream(): MediaStream | null;
 }
 
 export interface AudioCaptureModule {
@@ -353,6 +357,10 @@ class BrowserMicrophoneCaptureController implements MicrophoneCaptureController 
 
   setExpectedFrequencyHz(frequencyHz: number | null): void {
     this.expectedFrequencyHz = frequencyHz && frequencyHz > 0 ? frequencyHz : null;
+  }
+
+  getMediaStream(): MediaStream | null {
+    return this.mediaStream;
   }
 
   subscribe(listener: (state: LiveCaptureState) => void): () => void {

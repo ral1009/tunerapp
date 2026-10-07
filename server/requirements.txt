@@ -1,3 +1,9 @@
 fastapi
 uvicorn[standard]
 python-multipart
+# Real-time score following. Installed from source at a pinned tag rather than from PyPI: the
+# matchmaker-demo reference app this integration follows builds against the repo, and the source
+# install keeps us on exactly the revision whose BytesAudioStream/stream= contract was read and
+# verified. Pulls in partitura (which bundles its own soundfont, so no separate Fluidsynth install
+# has been needed on this dev machine) and librosa.
+pymatchmaker @ git+https://github.com/pymatchmaker/matchmaker.git@v0.3.0

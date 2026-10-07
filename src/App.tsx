@@ -12,8 +12,17 @@ import { applyNoteCorrectionsToXml } from "../score/correctionUI/noteXmlCorrecti
 import { renderScore, type RenderedScoreHandle, type ScoreCursor, type NoteHighlight } from "../score/renderer";
 import { ScoreFollower, DEFAULT_SCORE_FOLLOWER_CONFIG, type ScoreFollowerState } from "../practice/cursor";
 import { MetronomeScoreFollower, DEFAULT_METRONOME_FOLLOWER_CONFIG } from "../practice/metronomeFollower";
+import { MatchmakerScoreFollower, DEFAULT_MATCHMAKER_FOLLOWER_CONFIG } from "../practice/matchmakerFollower";
+import {
+  analysisFrameSizeFor,
+  OFFLINE_ANALYSIS_INTERVAL_SECONDS,
+  OFFLINE_SMOOTHING_FRAMES,
+  scoreRecordingOffline,
+  type AlignmentPoint
+} from "../practice/offlineIntonationScorer";
+import { MatchmakerStream, type MatchmakerStreamStatus } from "../audio/matchmakerStream";
 import { createBeatClock, computeTimeSignatureSegments, type BeatClock, type ClickSubdivision } from "../practice/metronome";
-import { summarizePracticeSession } from "../practice/reviewSummary";
+import { DEFAULT_GRADING, summarizePracticeSession, type GradeReference } from "../practice/reviewSummary";
 
 type ImportState = "idle" | "loading" | "success" | "error";
 
@@ -80,7 +89,11 @@ const CORRECTION_DURATION_OPTIONS: Array<{ label: string; quarterNotes: number }
 ];
 
 const OUT_OF_TUNE_HIGHLIGHT_COLOR = "#ff4d4d";
-const NOT_PLAYED_HIGHLIGHT_COLOR = "#ffc94d";
+// Amber: in the close band (see practice/reviewSummary.ts) -- worth a look, not a mistake.
+const CLOSE_HIGHLIGHT_COLOR = "#ffb020";
+// Grey rather than the old yellow, which read as "close" next to the amber above.
+const NOT_PLAYED_HIGHLIGHT_COLOR = "#9aa0a6";
+const OFFLINE_SCORING_TIMEOUT_MS = 15_000;
 
 function statusLabel(status: LiveCaptureState["status"]): string {
   switch (status) {
@@ -135,7 +148,8 @@ export default function App(): ReactElement {
   const [correctionDurationInput, setCorrectionDurationInput] = useState("");
   const [correctionError, setCorrectionError] = useState<string | null>(null);
 
-  const followerRef = useRef<ScoreFollower | MetronomeScoreFollower | null>(null);
+  const followerRef = useRef<ScoreFollower | MetronomeScoreFollower | MatchmakerScoreFollower | null>(null);
+  const matchmakerStreamRef = useRef<MatchmakerStream | null>(null);
   const [scoreCursor, setScoreCursor] = useState<ScoreCursor | null>(null);
   const [followerState, setFollowerState] = useState<ScoreFollowerState | null>(null);
   // "counting_in" is the metronome-mode-only gap between clicking "Practice this score" and the
@@ -151,13 +165,35 @@ export default function App(): ReactElement {
   useEffect(() => {
     practiceModeRef.current = practiceMode;
   }, [practiceMode]);
-  // Which mechanism drives cursor advancement during practice -- "listening" is the existing
+  // Which mechanism drives cursor advancement during practice. "listening" is the original
   // pitch/onset-driven ScoreFollower; "metronome" is MetronomeScoreFollower
-  // (practice/metronomeFollower.ts), a separate, simpler mode that advances purely on a
-  // user-chosen tempo and never looks at detected pitch/onsets to decide when to move. Added as
-  // an alternative, not a replacement, since pitch-based following isn't reliable live yet --
-  // see metronomeFollower.ts's header comment.
-  const [trackingMode, setTrackingMode] = useState<"listening" | "metronome">("listening");
+  // (practice/metronomeFollower.ts), which advances purely on a user-chosen tempo; "matchmaker"
+  // (practice/matchmakerFollower.ts) delegates the position decision to the Matchmaker library
+  // running in the Python server. All three coexist so they can be compared against real playing --
+  // the first has never been reliable live, and the third is new and unproven.
+  const [trackingMode, setTrackingMode] = useState<"listening" | "metronome" | "matchmaker">("matchmaker");
+  const [matchmakerStatus, setMatchmakerStatus] = useState<MatchmakerStreamStatus>("idle");
+  // Post-practice scoring: whether the server's alignment has arrived and local scoring begun (the
+  // fallback timer stands down once it has), and how far along it is.
+  const offlineScoringStartedRef = useRef(false);
+  const [offlineScoringProgress, setOfflineScoringProgress] = useState<number | null>(null);
+  const [matchmakerError, setMatchmakerError] = useState<string | null>(null);
+  // How the finished take is graded -- see practice/reviewSummary.ts. "own" by default.
+  const [gradeReference, setGradeReference] = useState<GradeReference>(DEFAULT_GRADING.reference);
+  // Live counters shown in the Alignment status line while a Matchmaker session runs, polled
+  // rather than pushed: the stream's chunk counter ticks ~30 times a second, and re-rendering the
+  // whole app on each one is exactly the kind of main-thread load that starved the socket in an
+  // earlier attempt. Polled on a timer so it costs a fixed 4 renders/second regardless.
+  const [matchmakerLive, setMatchmakerLive] = useState<{
+    gateOpen: boolean;
+    chunksSent: number;
+    framesAccepted: number;
+    framesRejected: number;
+    positionsReceived: number;
+    lastQuarter: number | null;
+    stepIndex: number | null;
+    latencyMs: number | null;
+  } | null>(null);
   const [metronomeBpm, setMetronomeBpm] = useState(90);
   // Metronome-mode-only: whether the audible click continues for the whole practice session, not
   // just the one-bar count-in before it starts. Off by default -- the count-in itself always
@@ -263,6 +299,8 @@ export default function App(): ReactElement {
       followerRef.current = null;
       beatClockRef.current?.stop();
       beatClockRef.current = null;
+      matchmakerStreamRef.current?.stop();
+      matchmakerStreamRef.current = null;
       sessionStartingRef.current = false;
       setScoreCursor(null);
       setFollowerState(null);
@@ -275,6 +313,31 @@ export default function App(): ReactElement {
       setMetronomeBpm(importResult.score.tempoBpm);
     }
   }, [importResult]);
+
+  useEffect(() => {
+    if (trackingMode !== "matchmaker" || practiceMode === "off") {
+      setMatchmakerLive(null);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const stream = matchmakerStreamRef.current?.getDiagnostics();
+      const follower = followerRef.current instanceof MatchmakerScoreFollower ? followerRef.current.getDiagnostics() : null;
+      if (!stream) {
+        return;
+      }
+      setMatchmakerLive({
+        gateOpen: stream.gateOpen,
+        chunksSent: stream.chunksSent,
+        framesAccepted: stream.framesAccepted,
+        framesRejected: stream.framesRejected,
+        positionsReceived: stream.positionsReceived,
+        lastQuarter: stream.lastQuarter,
+        stepIndex: follower?.stepIndex ?? null,
+        latencyMs: stream.lastLatencyMs
+      });
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [trackingMode, practiceMode]);
 
   useEffect(() => {
     if (practiceMode !== "off" && captureState.status !== "listening") {
@@ -310,24 +373,60 @@ export default function App(): ReactElement {
     // finishes on its own left the click playing forever, since nothing else here ever stops it.
     beatClockRef.current?.stop();
     beatClockRef.current = null;
+    // Same reasoning for the alignment socket and its mic worklet: a naturally-completed matchmaker
+    // session would otherwise keep streaming audio to the server after practice ended.
+    matchmakerStreamRef.current?.stop();
+    matchmakerStreamRef.current = null;
+    setMatchmakerStatus("idle");
     // This is the ONLY place that resets practiceMode to "off" after a session that actually
     // reached "active" (natural completion or End Practice both funnel through here -- see the
     // comment below) -- sessionStartingRef must be cleared here too, or handleStartPracticing()'s
     // re-entrancy guard (see its own doc comment) permanently blocks every future click after the
     // very first session ends, since nothing else would ever clear it for this path.
     sessionStartingRef.current = false;
-    const summary = summarizePracticeSession(followerState.history);
-    const highlights: NoteHighlight[] = [
-      ...summary.unstableNoteIds.map((id) => ({ stepIndex: Number(id), color: OUT_OF_TUNE_HIGHLIGHT_COLOR })),
-      ...summary.notPlayedNoteIds.map((id) => ({ stepIndex: Number(id), color: NOT_PLAYED_HIGHLIGHT_COLOR }))
-    ];
-    scoreCursor.highlightNotes(highlights);
+    // Highlights are drawn by the effect below, so they also redraw when the grading reference
+    // changes after the session.
     // Back to "off" now that the session has actually ended (naturally or via End Practice) --
     // this is also what hides the live "Current note"/"Intonation" readout below (gated on
     // practiceMode === "active") and swaps the button back to "Practice this score", so both
     // need this, not just the button.
     setPracticeMode("off");
   }, [followerState, scoreCursor]);
+
+  // Session-end highlights: out of tune red, close amber, not played grey. Re-runs when the
+  // grading reference changes, so switching "my tuning"/A440 recolours the score in place.
+  useEffect(() => {
+    if (!scoreCursor || !followerState) return;
+    if (followerState.status !== "completed" && followerState.status !== "stopped") return;
+    const summary = summarizePracticeSession(followerState.history, { ...DEFAULT_GRADING, reference: gradeReference });
+    const highlights: NoteHighlight[] = [
+      ...summary.unstableNoteIds.map((id) => ({ stepIndex: Number(id), color: OUT_OF_TUNE_HIGHLIGHT_COLOR })),
+      ...summary.closeNoteIds.map((id) => ({ stepIndex: Number(id), color: CLOSE_HIGHLIGHT_COLOR })),
+      ...summary.notPlayedNoteIds.map((id) => ({ stepIndex: Number(id), color: NOT_PLAYED_HIGHLIGHT_COLOR }))
+    ];
+    scoreCursor.highlightNotes(highlights);
+  }, [scoreCursor, followerState, gradeReference]);
+
+  // A Matchmaker take has ended and its post-practice alignment is on its way. However the follower
+  // got here (End Practice, the server reporting the piece finished, the cursor running off the end
+  // of the score), stop sending audio but keep the socket open for the result. If it never lands --
+  // the server failed, or went quiet -- end on the live estimate rather than waiting forever. The
+  // offline pass itself takes well under a second on a short piece (server/offline_check.py), so
+  // this only fires on a genuine failure.
+  const followerStatus = followerState?.status;
+  useEffect(() => {
+    if (followerStatus !== "scoring") {
+      return;
+    }
+    matchmakerStreamRef.current?.finish();
+    scoreCursor?.hide();
+    const timer = window.setTimeout(() => {
+      if (!offlineScoringStartedRef.current && followerRef.current instanceof MatchmakerScoreFollower) {
+        followerRef.current.finalizeWithoutOffline();
+      }
+    }, OFFLINE_SCORING_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [followerStatus, scoreCursor]);
 
   async function handleStart(): Promise<void> {
     const controller = controllerRef.current;
@@ -380,25 +479,159 @@ export default function App(): ReactElement {
     if (!scoreCursor) {
       return;
     }
-    const follower: ScoreFollower | MetronomeScoreFollower =
+    const follower: ScoreFollower | MetronomeScoreFollower | MatchmakerScoreFollower =
       trackingMode === "metronome"
         ? new MetronomeScoreFollower(scoreCursor, { ...DEFAULT_METRONOME_FOLLOWER_CONFIG, bowAttackDetectionEnabled })
-        : new ScoreFollower(scoreCursor, {
-            fuzzySequenceMatchingEnabled,
-            fuzzySequenceMaxSkips,
-            adaptiveStabilityWindowEnabled,
-            energyOnsetFusionEnabled
-          });
+        : trackingMode === "matchmaker"
+          ? new MatchmakerScoreFollower(scoreCursor)
+          : new ScoreFollower(scoreCursor, {
+              fuzzySequenceMatchingEnabled,
+              fuzzySequenceMaxSkips,
+              adaptiveStabilityWindowEnabled,
+              energyOnsetFusionEnabled
+            });
     followerRef.current = follower;
     follower.subscribe(setFollowerState);
     follower.start();
     scoreCursor.show();
     setPracticeMode("active");
 
-    // TEMPORARY debug hook for live diagnosis -- run `__scoreFollower.getTrace()` (listening mode
-    // only; the metronome follower has no resync trace to inspect) in the browser console after a
-    // practice session. Remove once the resync algorithm is validated against real playing.
-    (window as unknown as { __scoreFollower?: ScoreFollower | MetronomeScoreFollower }).__scoreFollower = follower;
+    // TEMPORARY debug hook for live diagnosis -- run `__scoreFollower.getTrace()` (listening and
+    // matchmaker modes; the metronome follower has nothing to trace) in the browser console after a
+    // practice session. Remove once tracking is validated against real playing.
+    (window as unknown as { __scoreFollower?: typeof follower }).__scoreFollower = follower;
+  }
+
+  // Matchmaker mode's own startup: opens the alignment socket and starts streaming mic audio to it.
+  // Kept out of beginFollowing() because the server needs seconds to synthesize the score's
+  // reference audio before it can align anything -- the follower only starts once that's done, so
+  // the cursor doesn't sit on the first note pretending to track while nothing is listening yet.
+  async function startMatchmakerSession(): Promise<void> {
+    const mediaStream = controllerRef.current?.getMediaStream();
+    if (!scoreCursor || !mediaStream || !importResult) {
+      sessionStartingRef.current = false;
+      return;
+    }
+
+    const stream = new MatchmakerStream();
+    matchmakerStreamRef.current = stream;
+    setMatchmakerError(null);
+    // Reuses metronome mode's pre-session state so the button becomes a cancel affordance while the
+    // server prepares the score, rather than looking idle and clickable for several seconds.
+    setPracticeMode("counting_in");
+
+    offlineScoringStartedRef.current = false;
+    setOfflineScoringProgress(null);
+
+    // Snapshot of how the live tuner is detecting pitch right now, so the post-practice pass runs
+    // the detector exactly the same way over the recording (see OfflineDetectorSetup).
+    const liveGainScalar = captureState.gainScalar;
+    const liveSilenceRmsThreshold = captureState.silenceRmsThreshold;
+    // Walked before the follower starts: both reset the cursor, which must not happen mid-session.
+    const scoreNotes = scoreCursor.listNotes();
+    const scoreQuarterIndex = scoreCursor.buildQuarterIndex();
+    let offlinePathReceived = false;
+
+    const scoreOffline = async (path: AlignmentPoint[]): Promise<void> => {
+      offlinePathReceived = true;
+      // The fallback timer only covers waiting for the server's reply. From here the work is local
+      // and runs to completion -- it takes a fraction of the take's own length, which for a long
+      // take can exceed the timer, and must not be discarded halfway.
+      offlineScoringStartedRef.current = true;
+      setOfflineScoringProgress(0);
+      const follower = followerRef.current;
+      if (!(follower instanceof MatchmakerScoreFollower)) {
+        return;
+      }
+      const sampleRate = stream.getDiagnostics().sampleRate ?? 48_000;
+      try {
+        const records = await scoreRecordingOffline(
+          stream.getRecordedAudio(),
+          path,
+          scoreNotes,
+          scoreQuarterIndex,
+          {
+            sampleRate,
+            gainScalar: liveGainScalar,
+            silenceRmsThreshold: liveSilenceRmsThreshold,
+            frameSize: analysisFrameSizeFor(sampleRate, LIVE_CAPTURE_OPTIONS.frameSize ?? 2048),
+            // Sparser than live and without the per-frame smoother -- see the constants' comments.
+            hopSize: Math.round(sampleRate * OFFLINE_ANALYSIS_INTERVAL_SECONDS),
+            confidenceThreshold: LIVE_CAPTURE_OPTIONS.confidenceThreshold ?? 0.67,
+            lowCutHz: LIVE_CAPTURE_OPTIONS.lowCutHz ?? 80,
+            highCutHz: LIVE_CAPTURE_OPTIONS.highCutHz ?? 3500,
+            smoothingWindowFrames: OFFLINE_SMOOTHING_FRAMES
+          },
+          {
+            inTuneCentsThreshold: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.inTuneCentsThreshold,
+            minSamplesForVerdict: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.minSamplesForVerdict,
+            settleMs: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.onsetSettleMs,
+            plausibilityHighConfidenceThreshold: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.plausibilityHighConfidenceThreshold,
+            plausibilityLowConfidenceCentsLimit: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.plausibilityLowConfidenceCentsLimit,
+            plausibilityAbsoluteCentsLimit: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.plausibilityAbsoluteCentsLimit
+          },
+          (fraction) => setOfflineScoringProgress(fraction)
+        );
+        if (records.length > 0) {
+          follower.applyOfflineHistory(records);
+        } else {
+          follower.finalizeWithoutOffline();
+        }
+      } catch (error) {
+        console.error("[matchmaker] post-practice scoring failed", error);
+        follower.finalizeWithoutOffline();
+      }
+    };
+
+    try {
+      await stream.start(mediaStream, importResult.xmlData, {
+        onStatus: setMatchmakerStatus,
+        onPosition: (quarter) => {
+          if (followerRef.current instanceof MatchmakerScoreFollower) {
+            followerRef.current.onQuarterPosition(quarter);
+          }
+        },
+        onCompleted: () => {
+          if (followerRef.current instanceof MatchmakerScoreFollower) {
+            followerRef.current.complete();
+          }
+        },
+        onError: (message) => {
+          setMatchmakerError(message);
+          if (followerRef.current instanceof MatchmakerScoreFollower) {
+            followerRef.current.stop();
+          }
+        },
+        onOfflineAlignment: (path) => {
+          void scoreOffline(path);
+        },
+        onClosed: () => {
+          // The server closes right after sending the offline alignment, so a close is only a
+          // failure signal when no alignment arrived first.
+          if (!offlinePathReceived && followerRef.current instanceof MatchmakerScoreFollower) {
+            followerRef.current.finalizeWithoutOffline();
+          }
+        }
+      }, {
+        // The capture module's calibrated noise-floor threshold, measured on the same raw signal
+        // the alignment stream carries -- see MatchmakerStreamOptions.silenceRmsThreshold.
+        silenceRmsThreshold: captureState.silenceRmsThreshold
+      });
+    } catch (error) {
+      setMatchmakerError(error instanceof Error ? error.message : "Could not start alignment.");
+      matchmakerStreamRef.current = null;
+      sessionStartingRef.current = false;
+      setPracticeMode("off");
+      return;
+    }
+
+    // The user may have backed out during the (multi-second) score preparation above.
+    if (!sessionStartingRef.current) {
+      stream.stop();
+      matchmakerStreamRef.current = null;
+      return;
+    }
+    beginFollowing();
   }
 
   function handleStartPracticing(): void {
@@ -427,6 +660,14 @@ export default function App(): ReactElement {
     // on the score, misrepresenting THIS session, since highlightNotes() only runs again at the
     // end of this new one.
     scoreCursor.highlightNotes([]);
+
+    if (trackingMode === "matchmaker") {
+      // Deferred like metronome mode's count-in, but waiting on the server preparing the score
+      // rather than on a bar of clicks. sessionStartingRef stays set across the await so a second
+      // click during preparation is still rejected by the guard above.
+      void startMatchmakerSession();
+      return;
+    }
 
     if (trackingMode !== "metronome") {
       // No count-in outside metronome mode -- ScoreFollower doesn't have (or need) a fixed tempo
@@ -483,17 +724,30 @@ export default function App(): ReactElement {
   function handleCancelCountIn(): void {
     beatClockRef.current?.stop();
     beatClockRef.current = null;
+    stopMatchmakerStream();
     sessionStartingRef.current = false;
     setPracticeMode("off");
   }
 
   function handleStopPracticing(): void {
     followerRef.current?.stop();
+    // This path abandons the session outright (mic lost) and hard-stops the stream below, so no
+    // post-practice result is coming -- end on the live estimate instead of waiting out the timeout.
+    if (followerRef.current instanceof MatchmakerScoreFollower) {
+      followerRef.current.finalizeWithoutOffline();
+    }
     beatClockRef.current?.stop();
     beatClockRef.current = null;
+    stopMatchmakerStream();
     sessionStartingRef.current = false;
     scoreCursor?.hide();
     setPracticeMode("off");
+  }
+
+  function stopMatchmakerStream(): void {
+    matchmakerStreamRef.current?.stop();
+    matchmakerStreamRef.current = null;
+    setMatchmakerStatus("idle");
   }
 
   // User-initiated "End Practice" -- finalizes the in-progress note and shows the same
@@ -507,6 +761,10 @@ export default function App(): ReactElement {
     followerRef.current?.stop();
     beatClockRef.current?.stop();
     beatClockRef.current = null;
+    // Not stopMatchmakerStream(): a Matchmaker take ends gracefully so the server can still send
+    // back its post-practice alignment (the follower is now "scoring"; see the effect watching it).
+    // Other modes have no stream, and this is a no-op for them.
+    matchmakerStreamRef.current?.finish();
     scoreCursor?.hide();
   }
 
@@ -637,7 +895,11 @@ export default function App(): ReactElement {
   const isInTune = liveCentsFromExpected !== null && Math.abs(liveCentsFromExpected) <= DEFAULT_SCORE_FOLLOWER_CONFIG.inTuneCentsThreshold;
   const intonationLabel = liveCentsFromExpected === null ? "Listening…" : isInTune ? "In tune" : "Off pitch";
   const intonationColor = liveCentsFromExpected === null ? "#f5f7fb" : isInTune ? "#8ee8cb" : "#ff8a8a";
-  const sessionSummary = summarizePracticeSession(followerState?.history ?? []);
+  const sessionSummary = summarizePracticeSession(followerState?.history ?? [], { ...DEFAULT_GRADING, reference: gradeReference });
+  // Read on render rather than mirrored into state: every change to it coincides with a follower
+  // emit, which already re-renders.
+  const finalScoringSource =
+    followerRef.current instanceof MatchmakerScoreFollower ? followerRef.current.getScoringSource() : null;
 
   return (
     <div style={styles.page}>
@@ -850,7 +1112,7 @@ export default function App(): ReactElement {
                   </button>
                 ) : practiceMode === "counting_in" ? (
                   <button type="button" style={styles.secondaryButton} onClick={handleCancelCountIn}>
-                    Counting in… (cancel)
+                    {trackingMode === "matchmaker" ? "Preparing score… (cancel)" : "Counting in… (cancel)"}
                   </button>
                 ) : (
                   <button
@@ -921,11 +1183,70 @@ export default function App(): ReactElement {
                     <input
                       type="radio"
                       name="trackingMode"
+                      checked={trackingMode === "matchmaker"}
+                      onChange={() => setTrackingMode("matchmaker")}
+                    />{" "}
+                    Matchmaker (alignment server, recommended)
+                  </label>{" "}
+                  <label>
+                    <input
+                      type="radio"
+                      name="trackingMode"
                       checked={trackingMode === "metronome"}
                       onChange={() => setTrackingMode("metronome")}
                     />{" "}
                     Metronome (tempo-driven, no pitch tracking)
                   </label>
+                </div>
+              ) : null}
+
+              {trackingMode === "matchmaker" && (matchmakerStatus !== "idle" || matchmakerError) ? (
+                <div style={styles.diagnosticHint}>
+                  Alignment:{" "}
+                  {matchmakerError
+                    ? matchmakerError
+                    : matchmakerStatus === "connecting"
+                      ? "connecting to the alignment server…"
+                      : matchmakerStatus === "preparing_score"
+                        ? "preparing the score (first time for a piece takes a moment)…"
+                        : matchmakerStatus === "waiting_for_sound"
+                          ? "ready — start playing from the first note"
+                          : matchmakerStatus === "streaming"
+                            ? matchmakerLive && !matchmakerLive.gateOpen
+                              ? "paused — holding position until you play again"
+                              : "listening"
+                            : matchmakerStatus === "completed"
+                              ? "finished"
+                              : matchmakerStatus}
+                  {matchmakerLive ? (
+                    <>
+                      {" "}
+                      · audio chunks sent {matchmakerLive.chunksSent} · matched the score {matchmakerLive.framesAccepted} · ignored as not-the-score{" "}
+                      {matchmakerLive.framesRejected} · positions received {matchmakerLive.positionsReceived}
+                      {matchmakerLive.lastQuarter !== null ? ` · server position ${matchmakerLive.lastQuarter.toFixed(2)} qn` : ""}
+                      {matchmakerLive.stepIndex !== null ? ` · cursor on note #${matchmakerLive.stepIndex + 1}` : ""}
+                      {matchmakerLive.latencyMs !== null ? ` · ${Math.round(matchmakerLive.latencyMs)}ms` : ""}
+                    </>
+                  ) : null}
+                  {matchmakerError && practiceMode === "off" ? (
+                    // Matchmaker is the default mode but depends on the separate Python server, so the
+                    // most common failure is simply that it isn't running. Say how to fix that, and
+                    // offer the mode that needs no server.
+                    <div>
+                      Score following needs the alignment server (in <code>server/</code>:{" "}
+                      <code>uvicorn main:app --port 8000</code>).{" "}
+                      <button
+                        type="button"
+                        style={styles.secondaryButton}
+                        onClick={() => {
+                          setMatchmakerError(null);
+                          setTrackingMode("metronome");
+                        }}
+                      >
+                        Use metronome mode instead
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -1064,16 +1385,62 @@ export default function App(): ReactElement {
                 </div>
               ) : null}
 
+              {followerState?.status === "scoring" ? (
+                <div style={styles.importResult}>
+                  <p style={styles.diagnosticHint}>
+                    {offlineScoringProgress === null
+                      ? "Aligning your recording with the score…"
+                      : `Scoring your recording… ${Math.round(offlineScoringProgress * 100)}%`}
+                  </p>
+                </div>
+              ) : null}
+
               {followerState?.status === "completed" || followerState?.status === "stopped" ? (
                 <div style={styles.importResult}>
                   <p style={styles.diagnosticHint}>
                     {followerState.status === "completed" ? "Practice session complete" : "Practice session ended"} —{" "}
+                    {sessionSummary.inTuneNoteIds.length} in tune, {sessionSummary.closeNoteIds.length} close,{" "}
                     {sessionSummary.unstableNoteIds.length} note
                     {sessionSummary.unstableNoteIds.length === 1 ? "" : "s"} out of tune,{" "}
                     {sessionSummary.notPlayedNoteIds.length} note
                     {sessionSummary.notPlayedNoteIds.length === 1 ? "" : "s"} not played,{" "}
+                    {sessionSummary.unmeasuredNoteIds.length > 0
+                      ? `${sessionSummary.unmeasuredNoteIds.length} too fast or unclear to measure, `
+                      : ""}
                     {sessionSummary.averageCentsError.toFixed(1)} cents average error.
                   </p>
+                  <div style={styles.diagnosticHint} role="radiogroup" aria-label="Grade against">
+                    Grade against:{" "}
+                    <label>
+                      <input
+                        type="radio"
+                        name="grade-reference"
+                        checked={gradeReference === "own"}
+                        onChange={() => setGradeReference("own")}
+                      />{" "}
+                      my own tuning
+                    </label>{" "}
+                    <label>
+                      <input
+                        type="radio"
+                        name="grade-reference"
+                        checked={gradeReference === "a440"}
+                        onChange={() => setGradeReference("a440")}
+                      />{" "}
+                      A440
+                    </label>
+                    {gradeReference === "own" && sessionSummary.referenceSource !== "a440"
+                      ? ` — your ${sessionSummary.referenceSource === "open_strings" ? "open strings" : "playing overall"} sat ${
+                          sessionSummary.referenceCents >= 0 ? "+" : ""
+                        }${sessionSummary.referenceCents.toFixed(0)}¢ from A440`
+                      : ""}
+                    . Green ±{DEFAULT_GRADING.inTuneCents}¢ in tune, amber up to ±{DEFAULT_GRADING.closeCents}¢ close, red out of tune.
+                  </div>
+                  {finalScoringSource === "live" ? (
+                    <p style={styles.diagnosticHint}>
+                      Approximate: the full-recording analysis didn't finish, so this uses the live estimate.
+                    </p>
+                  ) : null}
                   <div style={styles.buttonRow}>
                     <button type="button" style={styles.primaryButton} onClick={handleStartPracticing}>
                       Practice again

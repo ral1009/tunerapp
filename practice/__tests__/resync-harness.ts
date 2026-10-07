@@ -4,7 +4,7 @@
 // ScoreCursor (plain array, no OSMD/DOM dependency) with hand-built synthetic frame sequences, so
 // resync/reattack/deadline outcomes are deterministic and don't require live mic input.
 import { ScoreFollower, INSERTION_EDIT_DISTANCE, type ScoreFollowerConfig } from "../cursor";
-import type { CursorNoteInfo, ScoreCursor } from "../../score/renderer/scoreCursor";
+import type { CursorNoteInfo, QuarterIndexEntry, ScoreCursor } from "../../score/renderer/scoreCursor";
 import type { LivePitchFrame } from "../../audio/captureModule";
 
 let passed = 0;
@@ -122,6 +122,34 @@ function createMockScoreCursor(frequencies: number[], durationsQuarterNotes?: nu
         }
       }
       return results;
+    },
+    // Quarter positions accumulate each note's own duration, mirroring how OSMD's iterator
+    // timestamp advances. Only MatchmakerScoreFollower uses these; ScoreFollower (what this
+    // harness exercises) never calls them, so they exist to satisfy the ScoreCursor contract.
+    buildQuarterIndex(): QuarterIndexEntry[] {
+      const entries: QuarterIndexEntry[] = [];
+      let quarter = 0;
+      notes.forEach((note, stepIndex) => {
+        entries.push({ quarter, stepIndex });
+        quarter += note.durationQuarterNotes;
+      });
+      return entries;
+    },
+    listNotes(): CursorNoteInfo[] {
+      return [...notes];
+    },
+    seekToQuarter(indexEntries: readonly QuarterIndexEntry[], quarter: number): CursorNoteInfo | null {
+      let target = indexEntries.length > 0 ? indexEntries[0].stepIndex : 0;
+      for (const entry of indexEntries) {
+        if (entry.quarter <= quarter) {
+          target = entry.stepIndex;
+        }
+      }
+      if (target >= notes.length) {
+        return null;
+      }
+      index = target;
+      return notes[index];
     },
     show(): void {},
     hide(): void {},

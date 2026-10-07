@@ -1,0 +1,115 @@
+{
+  "_comment": "Real solo-violin recordings + matching scores for server/replay_check.py and `npm run replayScore`. Files go in server/tmp/recordings/ (gitignored), named as below. held_out pieces must never be used to tune anything -- check them only once a change is finished.",
+  "recordings": [
+    {
+      "name": "bwv1004-giga",
+      "audio": "bwv1004-giga.ogg",
+      "score": "bwv1004-giga.mid",
+      "held_out": false,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Partita_2_(Gigue)_J.S.Bach.ogg",
+      "audio_license": "CC BY 3.0 / GFDL 1.2+, performer: Vicond",
+      "score_source": "https://www.mutopiaproject.org/ftp/BachJS/BWV1004/bwv-1004_4_giga/bwv-1004_4_giga.mid",
+      "score_license": "CC BY-SA 3.0, Mutopia Project",
+      "notes": "Fast 12/8 sixteenths with constant string crossings. Repeats not played; the MIDI has none either."
+    },
+    {
+      "name": "bwv1004-corrente",
+      "audio": "bwv1004-corrente.ogg",
+      "score": "bwv1004-corrente.mid",
+      "held_out": false,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Partita_No.2_J.S.Bach_(corrente).ogg",
+      "audio_license": "CC BY 3.0 / GFDL 1.2+, performer: Vicond",
+      "score_source": "https://www.mutopiaproject.org/ftp/BachJS/BWV1004/bwv-1004_2/bwv-1004_2.mid",
+      "score_license": "CC BY-SA 3.0, Mutopia Project",
+      "notes": "3/4 with triplets and dotted rhythms, some double stops. Repeats not played; the MIDI doesn't unfold them."
+    },
+    {
+      "name": "bwv1004-allemanda-qmul",
+      "audio": "bwv1004-allemanda-qmul.ogg",
+      "score": "bwv1004-allemanda.mid",
+      "held_out": true,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Bach_Partita_2_-_Allemanda_-_18-04-2013.ogg",
+      "audio_license": "CC0, recorded at Queen Mary University of London 2013-04-18 (different performer from the dev set)",
+      "score_source": "https://www.mutopiaproject.org/ftp/BachJS/BWV1004/bwv-1004_1/bwv-1004_1.mid",
+      "score_license": "CC BY-SA 3.0, Mutopia Project",
+      "notes": "3:02 suggests repeats ARE played; check the .ly before trusting the result."
+    },
+    {
+      "name": "bwv1004-allemanda-vicond",
+      "audio": "bwv1004-allemanda-vicond.ogg",
+      "score": "bwv1004-allemanda.mid",
+      "held_out": true,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Partita_No.2_J.S.Bach_(Allemanda).ogg",
+      "audio_license": "CC BY 3.0 / GFDL 1.2+, performer: Vicond",
+      "score_source": "https://www.mutopiaproject.org/ftp/BachJS/BWV1004/bwv-1004_1/bwv-1004_1.mid",
+      "score_license": "CC BY-SA 3.0, Mutopia Project",
+      "notes": "Same score as the QMUL take: two performers on one piece."
+    },
+    {
+      "name": "bwv1006-menuet1",
+      "audio": "bwv1006-menuet1.ogg",
+      "score": "bwv1006-menuet1-unfolded.mid",
+      "held_out": true,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Partita_No.3_J.S.Bach_(Minuet_1).ogg",
+      "audio_license": "CC BY 3.0 / GFDL 1.2+, performer: Vicond",
+      "score_source": "https://www.mutopiaproject.org/ftp/BachJS/BWV1006/bwv-1006_4/bwv-1006_4.mid",
+      "score_license": "CC BY-SA 3.0, Mutopia Project",
+      "notes": "Slower texture, two voices in places. The performer repeats only the first section (A A B: 126 qn in 68 s; unfolding both repeats left the alignment stopping at 125.7 of 204 qn). The Mutopia MIDI unfolds neither, so the score file is the MIDI with bars 1-8 duplicated (mido, by tick: section boundary at 24 quarter notes)."
+    },
+    {
+      "name": "paganini-caprice1",
+      "audio": "paganini-caprice1.wav",
+      "score": "paganini-caprice1.mid",
+      "held_out": true,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Paganini_24_caprices_played_live_in_one_concert_without_interval_Nikolay_Madoyan.webm",
+      "audio_license": "CC BY-SA 4.0, performer: Nikolay Madoyan (live, 2003)",
+      "score_source": "https://www.mutopiaproject.org/ftp/PaganiniN/O1/Caprice_1/Caprice_1.mid",
+      "score_license": "CC BY-SA 3.0/4.0, Mutopia Project",
+      "notes": "Cut from the full concert at 11-126 s (located by subsequence DTW of the score's reference features against the whole concert; extract the audio with ffmpeg -vn -ac 1 -ar 48000)."
+    },
+    {
+      "name": "paganini-caprice2",
+      "audio": "paganini-caprice2.wav",
+      "score": "paganini-caprice2.mid",
+      "held_out": true,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Paganini_24_caprices_played_live_in_one_concert_without_interval_Nikolay_Madoyan.webm",
+      "audio_license": "CC BY-SA 4.0, performer: Nikolay Madoyan (live, 2003)",
+      "score_source": "https://www.mutopiaproject.org/ftp/PaganiniN/O1/Caprice_2/Caprice_2.mid",
+      "score_license": "CC BY-SA 3.0/4.0, Mutopia Project",
+      "notes": "Cut from the full concert at 127-294 s (located by subsequence DTW of the score's reference features against the whole concert; extract the audio with ffmpeg -vn -ac 1 -ar 48000)."
+    },
+    {
+      "name": "paganini-caprice3",
+      "audio": "paganini-caprice3.wav",
+      "score": "paganini-caprice3.mid",
+      "held_out": true,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Paganini_24_caprices_played_live_in_one_concert_without_interval_Nikolay_Madoyan.webm",
+      "audio_license": "CC BY-SA 4.0, performer: Nikolay Madoyan (live, 2003)",
+      "score_source": "https://www.mutopiaproject.org/ftp/PaganiniN/O1/Caprice_3/Caprice_3.mid",
+      "score_license": "CC BY-SA 3.0/4.0, Mutopia Project",
+      "notes": "Cut from the full concert at 296-476 s (located by subsequence DTW of the score's reference features against the whole concert; extract the audio with ffmpeg -vn -ac 1 -ar 48000)."
+    },
+    {
+      "name": "paganini-caprice2-norepeat",
+      "audio": "paganini-caprice2.wav",
+      "score": "paganini-caprice2-norepeat.mid",
+      "held_out": true,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Paganini_24_caprices_played_live_in_one_concert_without_interval_Nikolay_Madoyan.webm",
+      "audio_license": "CC BY-SA 4.0, performer: Nikolay Madoyan (live, 2003)",
+      "score_source": "https://www.mutopiaproject.org/ftp/PaganiniN/O1/Caprice_2/Caprice_2.mid",
+      "score_license": "CC BY-SA 3.0/4.0, Mutopia Project",
+      "notes": "Cut from the full concert at 127-294 s (located by subsequence DTW of the score's reference features against the whole concert; extract the audio with ffmpeg -vn -ac 1 -ar 48000). Score variant: Mutopia's unfolded MIDI with each immediately repeated block kept once (.scratch/fold_repeats.py) -- testing whether the performer skips the repeat."
+    },
+    {
+      "name": "paganini-caprice3-norepeat",
+      "audio": "paganini-caprice3.wav",
+      "score": "paganini-caprice3-norepeat.mid",
+      "held_out": true,
+      "audio_source": "https://commons.wikimedia.org/wiki/File:Paganini_24_caprices_played_live_in_one_concert_without_interval_Nikolay_Madoyan.webm",
+      "audio_license": "CC BY-SA 4.0, performer: Nikolay Madoyan (live, 2003)",
+      "score_source": "https://www.mutopiaproject.org/ftp/PaganiniN/O1/Caprice_3/Caprice_3.mid",
+      "score_license": "CC BY-SA 3.0/4.0, Mutopia Project",
+      "notes": "Cut from the full concert at 296-476 s (located by subsequence DTW of the score's reference features against the whole concert; extract the audio with ffmpeg -vn -ac 1 -ar 48000). Score variant: Mutopia's unfolded MIDI with each immediately repeated block kept once (.scratch/fold_repeats.py) -- testing whether the performer skips the repeat."
+    }
+  ]
+}

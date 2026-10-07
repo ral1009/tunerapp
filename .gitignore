@@ -3,3 +3,14 @@ dist/
 *.log
 audio/__tests__/offline-validation/ground-truth.json
 audio/__tests__/offline-validation/dataset/
+
+# Python side (server/)
+server/.venv*/
+__pycache__/
+*.pyc
+# Scratch space for uploaded sheet images and the hash-named score files the alignment service
+# writes for Matchmaker to load.
+server/tmp/
+
+# Local throwaway experiments
+.scratch/

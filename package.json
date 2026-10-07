@@ -11,7 +11,9 @@
     "preview:web": "vite preview",
     "phase0:generate-synthetic": "tsx audio/generateSynthetic.ts",
     "phase0:validate": "tsx audio/__tests__/offline-validation/runValidation.ts",
-    "followerTest": "tsx practice/__tests__/resync-harness.ts"
+    "followerTest": "tsx practice/__tests__/resync-harness.ts",
+    "offlineScorerTest": "tsx practice/__tests__/offline-scorer-harness.ts",
+    "replayScore": "tsx practice/__tests__/replay-scorer.ts"
   },
   "dependencies": {
     "opensheetmusicdisplay": "^2.1.2",
