@@ -1,5 +1,6 @@
-import { ComingNext } from '@/components/ComingNext';
+import { ReadingScreen } from '@/screens/reading/ReadingScreen';
+import { useLayoutMode } from '@/theme/settings';
 
-export default function Route() {
-  return <ComingNext title="Reading your music" note="Progress while the photo is read into notes." />;
+export default function ReadingRoute() {
+  return <ReadingScreen layout={useLayoutMode()} />;
 }

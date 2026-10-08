@@ -3,12 +3,17 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NavBar } from '@/components/nav';
 import { Body, Display, Eyebrow, GoldButton, Maple, Rule, Screen, Serif, TextButton, useGutter } from '@/components/ui';
-import { continuePiece, PIECES } from '@/data/library';
+import { useLibrary, type Piece } from '@/data/libraryStore';
 import { colors, fonts } from '@/theme/tokens';
+
+export function pieceSubtitle(piece: Piece): string {
+  const source = piece.source === 'sample' ? 'starter piece' : piece.source === 'photo' ? 'from a photo' : 'from a file';
+  return [piece.composer, `${piece.measureCount} bars`, source].filter(Boolean).join(' · ');
+}
 
 export function LibraryPhone() {
   const g = useGutter('phone');
-  const current = continuePiece();
+  const { pieces, current } = useLibrary();
   return (
     <Screen layout="phone" edges={['top']}>
       <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
@@ -17,35 +22,33 @@ export function LibraryPhone() {
           <TextButton label="+ Add music" tone="gold" href="/add-music" />
         </View>
 
-        <Maple style={[styles.continue, { marginHorizontal: g - 8 }]}>
-          <View style={styles.continueInner}>
-            <Eyebrow tone="bright">Continue</Eyebrow>
-            <Display size={30} style={{ marginTop: 12 }}>{current.title}</Display>
-            <Serif size={15} style={{ color: colors.cream }}>{current.composer} · {current.movement}</Serif>
-            <View style={styles.continueFoot}>
-              <Body style={{ color: colors.cream, fontSize: 12, flex: 1 }}>
-                {current.lastScore}% last take · {current.needsWork} needs work
-              </Body>
-              <GoldButton label="Play" href="/practice" style={{ minHeight: 40, paddingHorizontal: 16 }} />
+        {current ? (
+          <Maple style={[styles.continue, { marginHorizontal: g - 8 }]}>
+            <View style={styles.continueInner}>
+              <Eyebrow tone="bright">{current.openedAt ? 'Continue' : 'Start here'}</Eyebrow>
+              <Display size={30} style={{ marginTop: 12 }} numberOfLines={1}>{current.title}</Display>
+              <Serif size={15} style={{ color: colors.cream }}>{current.composer}</Serif>
+              <View style={styles.continueFoot}>
+                <Body style={{ color: colors.cream, fontSize: 12, flex: 1 }}>Not played yet</Body>
+                <GoldButton label="Open" href={{ pathname: '/piece/[id]', params: { id: current.id } }} style={{ minHeight: 40, paddingHorizontal: 16 }} />
+              </View>
             </View>
-          </View>
-        </Maple>
+          </Maple>
+        ) : null}
 
         <View style={{ paddingHorizontal: g, marginTop: 30 }}>
           <Eyebrow tone="muted">Your pieces</Eyebrow>
-          {PIECES.slice(1).map((piece) => (
+          {pieces.map((piece) => (
             <Link key={piece.id} href={{ pathname: '/piece/[id]', params: { id: piece.id } }} asChild>
               <Pressable accessibilityRole="link">
                 <View style={styles.row}>
                   <View style={{ flex: 1, gap: 3 }}>
-                    <Serif size={19}>{piece.title}</Serif>
-                    <Text style={styles.meta}>
-                      {piece.composer} · {piece.takes ? `${piece.takes} takes` : 'not played yet'}
-                    </Text>
+                    <Serif size={19} numberOfLines={1}>{piece.title}</Serif>
+                    <Text style={styles.meta}>{pieceSubtitle(piece)}</Text>
                   </View>
                   <View style={{ alignItems: 'flex-end', gap: 3 }}>
-                    <Display size={22}>{piece.lastScore === null ? '—' : `${piece.lastScore}%`}</Display>
-                    <Text style={[styles.meta, { color: piece.trendUp ? colors.good : colors.muted }]}>{piece.trend}</Text>
+                    <Display size={22}>—</Display>
+                    <Text style={styles.meta}>{piece.measureIssues.length ? `${piece.measureIssues.length} bars to check` : 'new'}</Text>
                   </View>
                 </View>
                 <Rule soft />

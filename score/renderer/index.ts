@@ -38,6 +38,11 @@ export interface ScoreRenderOptions {
   // corrected <time> for that single measure before OSMD renders it. Off by default; see
   // score/timeSignatureInference.ts for why the inference is inherently ambiguous.
   autoCorrectTimeSignatures?: boolean;
+  // Colour for every engraved element (notes, staff lines, text). Unset = OSMD's black. The native
+  // app's score engine passes ivory for its "ebony" theme (score/engine).
+  musicColor?: string;
+  // Part names ("Violin", or OMR's guess "Voice") before the first system. Default shown.
+  drawPartNames?: boolean;
 }
 
 // Rewrites <work-title> and <identification><creator type="composer"> (creating either if
@@ -140,6 +145,8 @@ export async function renderScore(
     setWantedStemDirectionByXml: false,
     drawTitle: options.drawTitle ?? true,
     drawComposer: options.drawComposer ?? true,
+    ...(options.musicColor ? { defaultColorMusic: options.musicColor } : {}),
+    drawPartNames: options.drawPartNames ?? true,
     onXMLRead: (xml: string) => {
       const withMetadata = applyMetadataOverrides(xml, options.titleOverride, options.composerOverride);
       // Applied before the beam-data check below so any measure-level correction is what

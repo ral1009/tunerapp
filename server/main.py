@@ -48,8 +48,9 @@ app.add_middleware(
     # same-origin request, which needs no CORS allowance at all. This allowlist only matters for
     # direct requests to this server (e.g. curl, or a client that bypasses the proxy) -- kept
     # permissive across localhost/127.0.0.1/any private-LAN IP on Vite's dev port since this
-    # server is local-dev-only, not deployed.
-    allow_origin_regex=r"https://(localhost|127\.0\.0\.1|(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.[\d.]+):5173",
+    # server is local-dev-only, not deployed. Also the native app's web build (Expo on :8081, plain
+    # http); the native iOS/Android app itself sends no Origin and needs no allowance.
+    allow_origin_regex=r"(https://(localhost|127\.0\.0\.1|(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.[\d.]+):5173)|(http://(localhost|127\.0\.0\.1|(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.[\d.]+):8081)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

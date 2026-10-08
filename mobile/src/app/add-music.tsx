@@ -1,5 +1,6 @@
-import { ComingNext } from '@/components/ComingNext';
+import { AddMusicScreen } from '@/screens/addMusic/AddMusicScreen';
+import { useLayoutMode } from '@/theme/settings';
 
-export default function Route() {
-  return <ComingNext title="Add music" note="Photograph a page or choose a PDF or MusicXML file." />;
+export default function AddMusicRoute() {
+  return <AddMusicScreen layout={useLayoutMode()} />;
 }

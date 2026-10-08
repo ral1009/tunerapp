@@ -11,6 +11,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 
+import { LibraryProvider, useLibrary } from '@/data/libraryStore';
 import { SettingsProvider, useSettings } from '@/theme/settings';
 import { colors } from '@/theme/tokens';
 
@@ -31,10 +32,12 @@ export default function RootLayout() {
 
   return (
     <SettingsProvider>
-      <ThemeProvider value={theme}>
-        <StatusBar style="light" />
-        <Gate ready={fontsLoaded || !!fontError} />
-      </ThemeProvider>
+      <LibraryProvider>
+        <ThemeProvider value={theme}>
+          <StatusBar style="light" />
+          <Gate ready={fontsLoaded || !!fontError} />
+        </ThemeProvider>
+      </LibraryProvider>
     </SettingsProvider>
   );
 }
@@ -43,7 +46,8 @@ export default function RootLayout() {
 // in the right layout and typeface.
 function Gate({ ready }: { ready: boolean }) {
   const { loaded } = useSettings();
-  const show = ready && loaded;
+  const library = useLibrary();
+  const show = ready && loaded && library.loaded;
   useEffect(() => {
     if (show) SplashScreen.hideAsync();
   }, [show]);

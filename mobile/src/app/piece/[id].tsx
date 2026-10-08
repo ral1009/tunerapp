@@ -1,10 +1,9 @@
 import { useLocalSearchParams } from 'expo-router';
 
-import { ComingNext } from '@/components/ComingNext';
-import { PIECES } from '@/data/library';
+import { PieceScreen } from '@/screens/piece/PieceScreen';
+import { useLayoutMode } from '@/theme/settings';
 
 export default function PieceRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const piece = PIECES.find((p) => p.id === id);
-  return <ComingNext title={piece?.title ?? 'Piece'} note="Progress across takes, the bars that need work, and every take." />;
+  return <PieceScreen layout={useLayoutMode()} id={id} />;
 }

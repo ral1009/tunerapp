@@ -84,3 +84,10 @@ export function useLayoutMode(): LayoutMode {
   if (settings.layout !== 'auto') return settings.layout;
   return Math.min(width, height) >= 600 ? 'tablet' : 'phone';
 }
+
+// The score's look right now. "Auto" will follow the room's light once that's wired; until then
+// it uses paper, the look most players read best.
+export function useScoreTheme(): 'paper' | 'ebony' {
+  const { settings } = useSettings();
+  return settings.scoreTheme === 'ebony' ? 'ebony' : 'paper';
+}
