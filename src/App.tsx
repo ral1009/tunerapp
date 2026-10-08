@@ -9,7 +9,8 @@ import {
 import { importPhotoToScore, type OmrImportResult } from "../score/omrImport";
 import { importMusicXmlToScore } from "../score/musicxmlImport";
 import { applyNoteCorrectionsToXml } from "../score/correctionUI/noteXmlCorrection";
-import { renderScore, type RenderedScoreHandle, type ScoreCursor, type NoteHighlight } from "../score/renderer";
+import { renderScore, type MeasureBox, type RenderedScoreHandle, type ScoreCursor, type NoteHighlight } from "../score/renderer";
+import type { CursorNoteInfo, QuarterIndexEntry } from "../score/renderer/scoreCursor";
 import { ScoreFollower, DEFAULT_SCORE_FOLLOWER_CONFIG, type ScoreFollowerState } from "../practice/cursor";
 import { MetronomeScoreFollower, DEFAULT_METRONOME_FOLLOWER_CONFIG } from "../practice/metronomeFollower";
 import { MatchmakerScoreFollower, DEFAULT_MATCHMAKER_FOLLOWER_CONFIG } from "../practice/matchmakerFollower";
@@ -24,6 +25,7 @@ import { MatchmakerStream, type MatchmakerStreamStatus } from "../audio/matchmak
 import { createBeatClock, computeTimeSignatureSegments, type BeatClock, type ClickSubdivision } from "../practice/metronome";
 import { DEFAULT_GRADING, STRICTNESS_BANDS, gradingOptions, summarizePracticeSession, type GradeReference, type GradeStrictness } from "../practice/reviewSummary";
 import { downloadTake, type SavedTake } from "../practice/takeExport";
+import { historyInRegion, passIsOver, resolveSpotRegion, summarizePass, type SpotPassResult, type SpotRegion } from "../practice/spotPractice";
 
 type ImportState = "idle" | "loading" | "success" | "error";
 
@@ -96,6 +98,10 @@ const CLOSE_HIGHLIGHT_COLOR = "#ffb020";
 const NOT_PLAYED_HIGHLIGHT_COLOR = "#9aa0a6";
 // Purple: reached but too fast or unclear to measure (verdict "unmeasured").
 const UNCLEAR_HIGHLIGHT_COLOR = "#a07ee0";
+// Spot practice: how long the player must stop on the loop's last note before the pass ends, and
+// how long a graded pass stays on screen before the next one starts listening.
+const SPOT_PASS_END_PAUSE_MS = 1200;
+const SPOT_NEXT_PASS_DELAY_MS = 1500;
 const OFFLINE_SCORING_TIMEOUT_MS = 15_000;
 
 function statusLabel(status: LiveCaptureState["status"]): string {
@@ -153,6 +159,30 @@ export default function App(): ReactElement {
 
   const followerRef = useRef<ScoreFollower | MetronomeScoreFollower | MatchmakerScoreFollower | null>(null);
   const matchmakerStreamRef = useRef<MatchmakerStream | null>(null);
+  // The current Matchmaker session's note list and quarter index, for "Jump to bar".
+  const sessionNotesRef = useRef<{ notes: CursorNoteInfo[]; quarterIndex: QuarterIndexEntry[] } | null>(null);
+  const [jumpBarInput, setJumpBarInput] = useState("");
+  // Spot practice (practice/spotPractice.ts): loop bars From-To, one graded pass at a time.
+  const [spotEnabled, setSpotEnabled] = useState(false);
+  const [spotFromInput, setSpotFromInput] = useState("");
+  const [spotToInput, setSpotToInput] = useState("");
+  // The region of the session on screen (null for a whole-piece session). State, not just a ref:
+  // the summary and the highlights filter by it after the session ends.
+  const [activeSpotRegion, setActiveSpotRegion] = useState<SpotRegion | null>(null);
+  const [spotPasses, setSpotPasses] = useState<SpotPassResult[]>([]);
+  // Keep looping after this pass? Cleared by End Practice, cancelling, or turning spot practice off.
+  const spotLoopingRef = useRef(false);
+  // The follower whose pass was last recorded. Keyed by follower, not a flag: when the next pass
+  // starts, the previous pass's finished state is still on screen until the new follower emits,
+  // and a reset flag recorded it a second time.
+  const spotRecordedFollowerRef = useRef<object | null>(null);
+  const [spotNextPassPending, setSpotNextPassPending] = useState(false);
+  // Choosing the loop by tapping bars on the score: first tap picks one bar, a second tap extends
+  // to a range, a third starts over.
+  const renderedScoreRef = useRef<RenderedScoreHandle | null>(null);
+  const [measureBoxes, setMeasureBoxes] = useState<MeasureBox[]>([]);
+  const [spotAwaitingEnd, setSpotAwaitingEnd] = useState(false);
+  const [jumpMessage, setJumpMessage] = useState<string | null>(null);
   const [scoreCursor, setScoreCursor] = useState<ScoreCursor | null>(null);
   const [followerState, setFollowerState] = useState<ScoreFollowerState | null>(null);
   // "counting_in" is the metronome-mode-only gap between clicking "Practice this score" and the
@@ -308,6 +338,7 @@ export default function App(): ReactElement {
           return;
         }
         handle = resolvedHandle;
+        renderedScoreRef.current = resolvedHandle;
         setScoreCursor(resolvedHandle.cursor);
       })
       .catch((err) => {
@@ -422,7 +453,7 @@ export default function App(): ReactElement {
   useEffect(() => {
     if (!scoreCursor || !followerState) return;
     if (followerState.status !== "completed" && followerState.status !== "stopped") return;
-    const summary = summarizePracticeSession(followerState.history, gradingOptions(gradeReference, gradeStrictness));
+    const summary = summarizePracticeSession(historyInRegion(followerState.history, activeSpotRegion), gradingOptions(gradeReference, gradeStrictness));
     const highlights: NoteHighlight[] = [
       ...summary.unstableNoteIds.map((id) => ({ stepIndex: Number(id), color: OUT_OF_TUNE_HIGHLIGHT_COLOR })),
       ...summary.closeNoteIds.map((id) => ({ stepIndex: Number(id), color: CLOSE_HIGHLIGHT_COLOR })),
@@ -430,7 +461,7 @@ export default function App(): ReactElement {
       ...summary.unmeasuredNoteIds.map((id) => ({ stepIndex: Number(id), color: UNCLEAR_HIGHLIGHT_COLOR }))
     ];
     scoreCursor.highlightNotes(highlights);
-  }, [scoreCursor, followerState, gradeReference, gradeStrictness]);
+  }, [scoreCursor, followerState, gradeReference, gradeStrictness, activeSpotRegion]);
 
   // A Matchmaker take has ended and its post-practice alignment is on its way. However the follower
   // got here (End Practice, the server reporting the piece finished, the cursor running off the end
@@ -452,6 +483,92 @@ export default function App(): ReactElement {
     }, OFFLINE_SCORING_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [followerStatus, scoreCursor]);
+
+  // Spot practice: a pass ends when the player goes past the loop, or stops on its last note for a
+  // moment (the stream's level gate closing is "stopped"). The take is then graded like any other.
+  const spotCurrentStep = followerState?.status === "in_progress" ? followerState.current?.stepIndex ?? null : null;
+  // Only once this pass has heard something: before the first note the stream is also "waiting".
+  const spotPlayerPaused =
+    matchmakerLive !== null && matchmakerLive.chunksSent > 0 && (matchmakerStatus === "waiting_for_sound" || !matchmakerLive.gateOpen);
+  useEffect(() => {
+    if (!activeSpotRegion || practiceMode !== "active" || spotCurrentStep === null) return;
+    if (passIsOver(spotCurrentStep, activeSpotRegion, false)) {
+      handleEndPracticing();
+      return;
+    }
+    if (!passIsOver(spotCurrentStep, activeSpotRegion, spotPlayerPaused)) return;
+    const timer = window.setTimeout(() => handleEndPracticing(), SPOT_PASS_END_PAUSE_MS);
+    return () => window.clearTimeout(timer);
+    // handleEndPracticing is recreated every render; the inputs that matter are listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpotRegion, practiceMode, spotCurrentStep, spotPlayerPaused]);
+
+  // Record each graded pass once, then start the next one if still looping.
+  useEffect(() => {
+    const follower = followerRef.current;
+    if (!activeSpotRegion || !followerState || !follower || spotRecordedFollowerRef.current === follower) return;
+    if (followerState.status !== "completed" && followerState.status !== "stopped") return;
+    spotRecordedFollowerRef.current = follower;
+    const pass = summarizePass(0, followerState.history, activeSpotRegion, gradingOptions(gradeReference, gradeStrictness));
+    // A pass stopped before anything was played isn't a pass.
+    if (pass.notPlayed < pass.notes) {
+      setSpotPasses((passes) => [...passes, { ...pass, pass: passes.length + 1 }]);
+    }
+    if (spotLoopingRef.current) setSpotNextPassPending(true);
+  }, [activeSpotRegion, followerState, gradeReference, gradeStrictness]);
+
+  useEffect(() => {
+    if (!spotNextPassPending || practiceMode !== "off") return;
+    // Long enough to see the pass's colours; the next pass then waits for the player to start
+    // (the stream sends nothing until it hears playing), with the colours still on the score.
+    const timer = window.setTimeout(() => {
+      setSpotNextPassPending(false);
+      if (spotLoopingRef.current) handleStartPracticing({ keepHighlights: true });
+    }, SPOT_NEXT_PASS_DELAY_MS);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spotNextPassPending, practiceMode]);
+
+  function handleStopLooping(): void {
+    spotLoopingRef.current = false;
+    setSpotNextPassPending(false);
+  }
+
+  // Bar boxes for tapping, refreshed whenever they're shown and on resize (OSMD re-lays out).
+  const spotSelecting = spotEnabled && practiceMode === "off" && !spotNextPassPending;
+  const showSpotBars = spotEnabled && scoreCursor !== null;
+  useEffect(() => {
+    if (!showSpotBars) {
+      setMeasureBoxes([]);
+      return;
+    }
+    const refresh = () => setMeasureBoxes(renderedScoreRef.current?.getMeasureBoxes() ?? []);
+    // OSMD's own resize re-render is debounced; measure after it settles.
+    let timer = window.setTimeout(refresh, 50);
+    const onResize = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(refresh, 400);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [showSpotBars, scoreCursor]);
+
+  function handleSpotBarTap(measureIndex: number): void {
+    const bar = measureIndex + 1;
+    const from = Number.parseInt(spotFromInput, 10);
+    if (spotAwaitingEnd && Number.isFinite(from)) {
+      setSpotFromInput(String(Math.min(from, bar)));
+      setSpotToInput(String(Math.max(from, bar)));
+      setSpotAwaitingEnd(false);
+    } else {
+      setSpotFromInput(String(bar));
+      setSpotToInput(String(bar));
+      setSpotAwaitingEnd(true);
+    }
+  }
 
   async function handleStart(): Promise<void> {
     const controller = controllerRef.current;
@@ -562,6 +679,9 @@ export default function App(): ReactElement {
     try {
       scoreNotes = scoreCursor.listNotes();
       scoreQuarterIndex = scoreCursor.buildQuarterIndex();
+      sessionNotesRef.current = { notes: scoreNotes, quarterIndex: scoreQuarterIndex };
+      setJumpBarInput("");
+      setJumpMessage(null);
     } catch (error) {
       console.error("Could not read the score's notes for score following", error);
       setMatchmakerError(
@@ -571,6 +691,31 @@ export default function App(): ReactElement {
       sessionStartingRef.current = false;
       setPracticeMode("off");
       return;
+    }
+    let spotRegion: SpotRegion | null = null;
+    if (spotEnabled) {
+      const resolved = resolveSpotRegion(scoreNotes, scoreQuarterIndex, Number.parseInt(spotFromInput, 10), Number.parseInt(spotToInput, 10));
+      if (typeof resolved === "string") {
+        setMatchmakerError(resolved);
+        matchmakerStreamRef.current = null;
+        sessionStartingRef.current = false;
+        spotLoopingRef.current = false;
+        setPracticeMode("off");
+        return;
+      }
+      spotRegion = resolved;
+      // A different passage starts a fresh pass history.
+      setActiveSpotRegion((previous) => {
+        if (!previous || previous.firstStepIndex !== resolved.firstStepIndex || previous.lastStepIndex !== resolved.lastStepIndex) {
+          setSpotPasses([]);
+        }
+        return resolved;
+      });
+      spotLoopingRef.current = true;
+    } else {
+      setActiveSpotRegion(null);
+      setSpotPasses([]);
+      spotLoopingRef.current = false;
     }
     let offlinePathReceived = false;
 
@@ -682,9 +827,43 @@ export default function App(): ReactElement {
       return;
     }
     beginFollowing();
+    if (spotRegion && followerRef.current instanceof MatchmakerScoreFollower) {
+      // Every pass starts at the loop's first note: the same jump "Jump to bar" makes, sent before
+      // any audio, so both the live follower and the post-take alignment start there.
+      stream.seek(spotRegion.fromQuarter);
+      followerRef.current.jumpToQuarter(spotRegion.fromQuarter);
+    }
   }
 
-  function handleStartPracticing(): void {
+  // "Jump to bar": when one bar stops tracking (often an OMR misread), the player moves on and
+  // tells the app where they are. The server aligns the take before and after the jump
+  // separately; notes jumped over are reported as not played.
+  function handleJumpToBar(): void {
+    const follower = followerRef.current;
+    const stream = matchmakerStreamRef.current;
+    const session = sessionNotesRef.current;
+    const bar = Number.parseInt(jumpBarInput, 10);
+    if (!(follower instanceof MatchmakerScoreFollower) || !stream || !session || !Number.isFinite(bar)) {
+      return;
+    }
+    // The first note in that bar (or the first after it, if the bar has no notes of its own).
+    const entry = [...session.quarterIndex]
+      .sort((a, b) => a.quarter - b.quarter)
+      .find((candidate) => (session.notes[candidate.stepIndex]?.measureIndex ?? -1) + 1 >= bar);
+    if (!entry) {
+      setJumpMessage(`There's no bar ${bar} with notes in this score.`);
+      return;
+    }
+    if (!stream.seek(entry.quarter)) {
+      setJumpMessage("The alignment server isn't connected, so the jump can't be recorded.");
+      return;
+    }
+    follower.jumpToQuarter(entry.quarter);
+    const landedBar = (session.notes[entry.stepIndex]?.measureIndex ?? 0) + 1;
+    setJumpMessage(landedBar === bar ? `Jumped to bar ${bar}. Play from there.` : `Bar ${bar} has no notes; jumped to bar ${landedBar}.`);
+  }
+
+  function handleStartPracticing(options: { keepHighlights?: boolean } = {}): void {
     // Without this, clicking "Practice this score" more than once while a session is already
     // counting in or active (e.g. a few impatient clicks before the button visibly swaps to
     // "Counting in… (cancel)") creates ANOTHER BeatClock -- its own AudioContext, setInterval
@@ -708,8 +887,11 @@ export default function App(): ReactElement {
     highlightedSessionRef.current = false;
     // Clear any red/yellow highlights left over from a previous session -- otherwise they'd sit
     // on the score, misrepresenting THIS session, since highlightNotes() only runs again at the
-    // end of this new one.
-    scoreCursor.highlightNotes([]);
+    // end of this new one. Spot practice's next pass keeps them: the player is looking at what to
+    // fix while playing the same bars again.
+    if (!options.keepHighlights) {
+      scoreCursor.highlightNotes([]);
+    }
 
     if (trackingMode === "matchmaker") {
       // Deferred like metronome mode's count-in, but waiting on the server preparing the score
@@ -772,6 +954,7 @@ export default function App(): ReactElement {
   // for the summary" convention would otherwise imply (there's no session/summary to show for a
   // count-in that never became a real practice attempt).
   function handleCancelCountIn(): void {
+    handleStopLooping();
     beatClockRef.current?.stop();
     beatClockRef.current = null;
     stopMatchmakerStream();
@@ -780,6 +963,7 @@ export default function App(): ReactElement {
   }
 
   function handleStopPracticing(): void {
+    handleStopLooping();
     followerRef.current?.stop();
     // This path abandons the session outright (mic lost) and hard-stops the stream below, so no
     // post-practice result is coming -- end on the live estimate instead of waiting out the timeout.
@@ -945,7 +1129,7 @@ export default function App(): ReactElement {
   const isInTune = liveCentsFromExpected !== null && Math.abs(liveCentsFromExpected) <= DEFAULT_SCORE_FOLLOWER_CONFIG.inTuneCentsThreshold;
   const intonationLabel = liveCentsFromExpected === null ? "Listening…" : isInTune ? "In tune" : "Off pitch";
   const intonationColor = liveCentsFromExpected === null ? "#f5f7fb" : isInTune ? "#8ee8cb" : "#ff8a8a";
-  const sessionSummary = summarizePracticeSession(followerState?.history ?? [], gradingOptions(gradeReference, gradeStrictness));
+  const sessionSummary = summarizePracticeSession(historyInRegion(followerState?.history ?? [], activeSpotRegion), gradingOptions(gradeReference, gradeStrictness));
   // Read on render rather than mirrored into state: every change to it coincides with a follower
   // emit, which already re-renders.
   const finalScoringSource =
@@ -1151,16 +1335,61 @@ export default function App(): ReactElement {
                 {importResult.score.measures.reduce((total, measure) => total + measure.notes.length, 0)} notes detected across{" "}
                 {importResult.score.measures.length} measures.
               </p>
+              {importResult.score.measureIssues && importResult.score.measureIssues.length > 0 ? (
+                <p style={{ ...styles.diagnosticHint, color: "#ffb020" }}>
+                  {importResult.score.measureIssues.length === 1 ? "1 bar doesn't" : `${importResult.score.measureIssues.length} bars don't`}{" "}
+                  add up to the time signature, which usually means a note was misread:{" "}
+                  {importResult.score.measureIssues
+                    .slice(0, 10)
+                    .map((issue) => `bar ${issue.measureNumber} (${issue.kind === "empty" ? "empty" : issue.kind === "short" ? "too short" : "too long"})`)
+                    .join(", ")}
+                  {importResult.score.measureIssues.length > 10 ? ", …" : ""}. Following can stall there: fix the note with
+                  "Fix a misread note" below, or use "Jump to bar" during practice to skip past it.
+                </p>
+              ) : null}
 
               <div style={styles.buttonRow}>
                 <button type="button" style={styles.secondaryButton} onClick={handleDownloadMusicXml}>
                   Download MusicXML
                 </button>
                 {practiceMode === "active" ? (
-                  <button type="button" style={styles.secondaryButton} onClick={handleEndPracticing}>
-                    End Practice
+                  <button
+                    type="button"
+                    style={styles.secondaryButton}
+                    onClick={() => {
+                      handleStopLooping();
+                      handleEndPracticing();
+                    }}
+                  >
+                    {activeSpotRegion ? "Stop looping" : "End Practice"}
                   </button>
-                ) : practiceMode === "counting_in" ? (
+                ) : null}
+                {practiceMode === "active" && trackingMode === "matchmaker" && followerState?.status === "in_progress" ? (
+                  <form
+                    style={{ display: "flex", gap: 8, alignItems: "center" }}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      handleJumpToBar();
+                    }}
+                  >
+                    <label style={styles.diagnosticHint} htmlFor="jump-bar">
+                      Stuck? Jump to bar
+                    </label>
+                    <input
+                      id="jump-bar"
+                      type="number"
+                      min={1}
+                      inputMode="numeric"
+                      value={jumpBarInput}
+                      onChange={(event) => setJumpBarInput(event.target.value)}
+                      style={{ width: 64 }}
+                    />
+                    <button type="submit" style={styles.secondaryButton} disabled={!jumpBarInput}>
+                      Go
+                    </button>
+                  </form>
+                ) : null}
+                {practiceMode === "active" ? null : practiceMode === "counting_in" ? (
                   <button type="button" style={styles.secondaryButton} onClick={handleCancelCountIn}>
                     {trackingMode === "matchmaker" ? "Preparing score… (cancel)" : "Counting in… (cancel)"}
                   </button>
@@ -1250,6 +1479,82 @@ export default function App(): ReactElement {
                 </div>
               ) : null}
 
+              {trackingMode === "matchmaker" && practiceMode === "off" && !spotNextPassPending ? (
+                <div style={{ ...styles.diagnosticHint, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={spotEnabled}
+                      onChange={(event) => {
+                        setSpotEnabled(event.target.checked);
+                        if (!event.target.checked) handleStopLooping();
+                      }}
+                    />{" "}
+                    Loop a passage (spot practice)
+                  </label>
+                  {spotEnabled ? (
+                    <>
+                      <label>
+                        bars{" "}
+                        <input
+                          type="number"
+                          min={1}
+                          inputMode="numeric"
+                          aria-label="First bar to loop"
+                          value={spotFromInput}
+                          onChange={(event) => setSpotFromInput(event.target.value)}
+                          style={{ width: 56 }}
+                        />
+                      </label>
+                      <label>
+                        to{" "}
+                        <input
+                          type="number"
+                          min={1}
+                          inputMode="numeric"
+                          aria-label="Last bar to loop"
+                          value={spotToInput}
+                          onChange={(event) => setSpotToInput(event.target.value)}
+                          style={{ width: 56 }}
+                        />
+                      </label>
+                      <span>
+                        {spotAwaitingEnd
+                          ? "Tap the last bar to loop (or start now to loop just this bar)."
+                          : "Tap a bar on the score to start choosing, or type the bars."}{" "}
+                        Each pass is graded when you play past the last bar or stop; the next one starts when you play again.
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {activeSpotRegion && (spotPasses.length > 0 || practiceMode !== "off" || spotNextPassPending) ? (
+                <div style={styles.diagnosticHint}>
+                  <strong>
+                    Looping bars {activeSpotRegion.fromBar}–{activeSpotRegion.toBar}
+                    {practiceMode !== "off" ? ` · pass ${spotPasses.length + 1}` : ""}
+                    {spotNextPassPending ? " · next pass starting…" : ""}
+                  </strong>
+                  {spotPasses.length > 0 ? (
+                    <ol style={{ margin: "4px 0 0", paddingLeft: 20 }}>
+                      {spotPasses.map((pass) => (
+                        <li key={pass.pass}>
+                          {pass.inTune}/{pass.notes} in tune · {pass.close} close · {pass.outOfTune} out
+                          {pass.unclear > 0 ? ` · ${pass.unclear} unclear` : ""}
+                          {pass.notPlayed > 0 ? ` · ${pass.notPlayed} not reached` : ""} · {pass.averageCentsError.toFixed(1)}¢ avg
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null}
+                  {spotNextPassPending ? (
+                    <button type="button" style={styles.secondaryButton} onClick={handleStopLooping}>
+                      Stop looping
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
               {trackingMode === "matchmaker" && (matchmakerStatus !== "idle" || matchmakerError) ? (
                 <div style={styles.diagnosticHint}>
                   Alignment:{" "}
@@ -1260,7 +1565,9 @@ export default function App(): ReactElement {
                       : matchmakerStatus === "preparing_score"
                         ? "preparing the score (first time for a piece takes a moment)…"
                         : matchmakerStatus === "waiting_for_sound"
-                          ? "ready — start playing from the first note"
+                          ? activeSpotRegion
+                            ? `ready — start playing from bar ${activeSpotRegion.fromBar}`
+                            : "ready — start playing from the first note"
                           : matchmakerStatus === "streaming"
                             ? matchmakerLive && !matchmakerLive.gateOpen
                               ? "paused — holding position until you play again"
@@ -1418,7 +1725,42 @@ export default function App(): ReactElement {
 
               {renderError ? <div style={styles.errorBox}>Could not render this score: {renderError}</div> : null}
 
-              <div ref={scoreContainerRef} style={styles.scoreContainer} />
+              <div style={{ position: "relative", marginTop: 16 }}>
+                <div ref={scoreContainerRef} style={styles.scoreContainer} />
+                {measureBoxes.length > 0 ? (
+                  <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }} aria-label="Bars to loop">
+                    {measureBoxes.map((box) => {
+                      const bar = box.measureIndex + 1;
+                      const from = Number.parseInt(spotFromInput, 10);
+                      const to = Number.parseInt(spotToInput, 10);
+                      const selected = Number.isFinite(from) && Number.isFinite(to) && bar >= Math.min(from, to) && bar <= Math.max(from, to);
+                      return (
+                        <button
+                          key={box.measureIndex}
+                          type="button"
+                          aria-label={`Bar ${bar}`}
+                          aria-pressed={selected}
+                          disabled={!spotSelecting}
+                          onClick={() => handleSpotBarTap(box.measureIndex)}
+                          style={{
+                            position: "absolute",
+                            left: box.left,
+                            top: box.top,
+                            width: box.width,
+                            height: box.height,
+                            padding: 0,
+                            border: selected ? "2px solid rgba(255, 176, 32, 0.9)" : spotSelecting ? "1px dashed rgba(90, 90, 90, 0.25)" : "none",
+                            borderRadius: 6,
+                            background: selected ? "rgba(255, 176, 32, 0.18)" : "transparent",
+                            cursor: spotSelecting ? "pointer" : "default",
+                            pointerEvents: spotSelecting ? "auto" : "none"
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
 
               {practiceMode === "active" && followerState?.current ? (
                 <div style={styles.readoutGrid}>
@@ -1541,7 +1883,7 @@ export default function App(): ReactElement {
                         Download this take
                       </button>
                     ) : null}
-                    <button type="button" style={styles.primaryButton} onClick={handleStartPracticing}>
+                    <button type="button" style={styles.primaryButton} onClick={() => handleStartPracticing()}>
                       Practice again
                     </button>
                   </div>
@@ -1792,7 +2134,6 @@ const styles: Record<string, CSSProperties> = {
     marginTop: "8px"
   },
   scoreContainer: {
-    marginTop: "16px",
     background: "#f7f4ee",
     borderRadius: "16px",
     padding: "16px",

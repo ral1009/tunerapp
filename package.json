@@ -14,7 +14,8 @@
     "followerTest": "tsx practice/__tests__/resync-harness.ts",
     "offlineScorerTest": "tsx practice/__tests__/offline-scorer-harness.ts",
     "replayScore": "tsx practice/__tests__/replay-scorer.ts",
-    "replayTake": "tsx practice/__tests__/replay-take.ts"
+    "replayTake": "tsx practice/__tests__/replay-take.ts",
+    "spotPracticeTest": "tsx practice/__tests__/spot-practice-harness.ts"
   },
   "dependencies": {
     "opensheetmusicdisplay": "^2.1.2",

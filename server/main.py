@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -310,8 +311,18 @@ async def align(websocket: WebSocket) -> None:
                             await websocket.send_json({"framesAccepted": accepted, "framesRejected": rejected})
                         continue
                     text = message.get("text")
-                    if text and '"stop"' in text:
-                        break
+                    if text:
+                        try:
+                            control = json.loads(text)
+                        except ValueError:
+                            control = {}
+                        if control.get("type") == "seek" and isinstance(control.get("quarter"), (int, float)):
+                            # The player jumped ("Jump to bar"): move the live follower and
+                            # remember where, for the post-take alignment.
+                            aligner.seek(float(control["quarter"]))
+                            continue
+                        if control.get("type") == "stop" or '"stop"' in text:
+                            break
             except WebSocketDisconnect:
                 pass
             finally:

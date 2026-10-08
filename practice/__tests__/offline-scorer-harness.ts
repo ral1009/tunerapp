@@ -274,6 +274,72 @@ async function main(): Promise<void> {
     );
   }
 
+  console.log("\n7. jumps (\"Jump to bar\"): skipped notes are not played, a replayed bar counts its last attempt");
+  {
+    const midis = [67, 69, 71, 72, 74, 76, 78, 79];
+    const notes = makeNotes(midis);
+    const quarterIndex = quarterIndexFor(notes);
+    const stretch = (fromSeconds: number, toSeconds: number, fromQuarter: number): AlignmentPoint[] =>
+      linearPath(fromSeconds, toSeconds).map((point) => ({
+        perfTimeSeconds: point.perfTimeSeconds,
+        quarter: fromQuarter + (point.perfTimeSeconds - fromSeconds) / SECONDS_PER_QUARTER
+      }));
+
+    // Notes 0-1, then a jump to note 5 and notes 5-7.
+    const forwardAudio = renderTones([0, 1, 5, 6, 7].map((i) => ({ hz: midiToHz(midis[i]), seconds: SECONDS_PER_QUARTER })));
+    const forwardPath = [...stretch(0, 0.99, 0), ...stretch(1.0, 2.5, 5)];
+    const forward = await scoreRecordingOffline(forwardAudio, forwardPath, notes, quarterIndex, DETECTOR, SCORING);
+    check(
+      "notes jumped over are not played",
+      [2, 3, 4].every((i) => forward[i].verdict === "not_played"),
+      forward.map((record) => record.verdict).join(" ")
+    );
+    check("notes either side of the jump are graded", [0, 1, 5, 6, 7].every((i) => forward[i].verdict === "in_tune"));
+
+    // Notes 0-3 with note 2 played 50c sharp, then back to note 2 and notes 2-3 played in tune.
+    const backAudio = renderTones([
+      ...[0, 1].map((i) => ({ hz: midiToHz(midis[i]), seconds: SECONDS_PER_QUARTER })),
+      { hz: detuned(midis[2], 50), seconds: SECONDS_PER_QUARTER },
+      ...[3, 2, 3].map((i) => ({ hz: midiToHz(midis[i]), seconds: SECONDS_PER_QUARTER }))
+    ]);
+    const backPath = [...stretch(0, 1.99, 0), ...stretch(2.0, 3.0, 2)];
+    const back = await scoreRecordingOffline(backAudio, backPath, notes, quarterIndex, DETECTOR, SCORING);
+    check(
+      "a replayed note is graded on its last attempt",
+      back[2].verdict === "in_tune" && Math.abs(back[2].averageCentsOff ?? 99) < 10,
+      `note 2: ${back[2].verdict} ${back[2].averageCentsOff?.toFixed(1)}`
+    );
+    check("notes before the replay are kept", back[0].verdict === "in_tune" && back[1].verdict === "in_tune");
+  }
+
+  console.log("\n8. a repeated pair (\"D D\") whose first note is off, with the alignment's split in the wrong place");
+  {
+    // E, D (50c flat), D (in tune), F#, each half a second with a short fade between (a bow change).
+    const midis = [76, 74, 74, 78];
+    const notes = makeNotes(midis);
+    const quarterIndex = quarterIndexFor(notes);
+    const audio = renderTones([
+      { hz: midiToHz(76), seconds: 0.5 },
+      { hz: detuned(74, -50), seconds: 0.5 },
+      { hz: midiToHz(74), seconds: 0.5 },
+      { hz: midiToHz(78), seconds: 0.5 }
+    ]);
+    // Correct where the pitch changes (0.5 s, 1.5 s); wrong between the two Ds (1.4 s, not 1.0 s) --
+    // chroma can't see that boundary, so the alignment's split there is arbitrary.
+    const path: AlignmentPoint[] = [];
+    for (let t = 0; t <= 2 + 1e-9; t += 1 / 30) {
+      const quarter = t < 0.5 ? t / 0.5 : t < 1.4 ? 1 + (t - 0.5) / 0.9 : t < 1.5 ? 2 + (t - 1.4) / 0.1 : 3 + (t - 1.5) / 0.5;
+      path.push({ perfTimeSeconds: t, quarter });
+    }
+    const records = await scoreRecordingOffline(audio, path, notes, quarterIndex, DETECTOR, SCORING);
+    check(
+      "the flat first D is measured on its own audio",
+      Math.abs((records[1].averageCentsOff ?? 0) + 50) < 10 && records[1].verdict === "out_of_tune",
+      `D1 ${records[1].averageCentsOff?.toFixed(1)} (${records[1].verdict}), D2 ${records[2].averageCentsOff?.toFixed(1)}`
+    );
+    check("the in-tune second D stays in tune", records[2].verdict === "in_tune");
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) {
     process.exitCode = 1;

@@ -8,7 +8,21 @@ export type { CursorNoteInfo, ScoreCursor, NoteHighlight } from "./scoreCursor";
 export interface RenderedScoreHandle {
   unmount(): void;
   cursor: ScoreCursor;
+  // Where each bar is drawn, in pixels relative to the container passed to renderScore -- for
+  // tapping bars on the score (spot practice). Read fresh each time: OSMD re-lays out on resize.
+  getMeasureBoxes(): MeasureBox[];
 }
+
+export interface MeasureBox {
+  measureIndex: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+// OSMD lays out in its own units: 10 px per unit at zoom 1.
+const OSMD_UNIT_PX = 10;
 
 export interface ScoreRenderOptions {
   drawTitle?: boolean;
@@ -155,6 +169,35 @@ export async function renderScore(
 
   return {
     cursor,
+    getMeasureBoxes() {
+      const svg = container.querySelector("svg");
+      if (!svg || !osmd.GraphicSheet) return [];
+      const svgRect = svg.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const offsetX = svgRect.left - containerRect.left;
+      const offsetY = svgRect.top - containerRect.top;
+      const scale = OSMD_UNIT_PX * osmd.zoom;
+      const boxes: MeasureBox[] = [];
+      osmd.GraphicSheet.MeasureList.forEach((staves, measureIndex) => {
+        // One box per bar spanning all its staves (a single violin staff in practice).
+        const shapes = staves.filter((measure) => measure?.PositionAndShape).map((measure) => measure.PositionAndShape);
+        if (shapes.length === 0) return;
+        const left = Math.min(...shapes.map((b) => b.AbsolutePosition.x + b.BorderLeft));
+        const right = Math.max(...shapes.map((b) => b.AbsolutePosition.x + b.BorderRight));
+        // A bar's own box covers just its staff lines; extend a little so notes above/below the
+        // staff are tappable too.
+        const top = Math.min(...shapes.map((b) => b.AbsolutePosition.y + b.BorderTop)) - 2;
+        const bottom = Math.max(...shapes.map((b) => b.AbsolutePosition.y + b.BorderBottom)) + 2;
+        boxes.push({
+          measureIndex,
+          left: offsetX + left * scale,
+          top: offsetY + top * scale,
+          width: (right - left) * scale,
+          height: (bottom - top) * scale
+        });
+      });
+      return boxes;
+    },
     unmount() {
       osmd.clear();
       container.innerHTML = "";

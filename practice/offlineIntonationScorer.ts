@@ -257,7 +257,18 @@ async function scoreInformed(
   // attacks) was tried to fix repeated-note boundaries and made fast real passages much worse:
   // string crossings make loudness jumps that aren't note starts (Giga: 12% -> 36% of notes
   // unmeasured). Don't re-add it without note-level segmentation that checks the rhythm.
-  const starts = entries.map((entry) => timeAtQuarter(path, entry.quarter));
+  // A take with jumps in it ("Jump to bar") is several stretches; each note is measured in the
+  // LAST stretch that reached it, so a bar played again after jumping back is graded on the
+  // second attempt.
+  const stretches = splitAtBackwardJumps(path);
+  const stretchFor = entries.map((entry) => {
+    for (let k = stretches.length - 1; k >= 0; k -= 1) {
+      if (reachedAt(stretches[k], entry.quarter) !== null) return stretches[k];
+    }
+    return null;
+  });
+  const starts = entries.map((entry, i) => (stretchFor[i] ? reachedAt(stretchFor[i] as AlignmentPoint[], entry.quarter) : null));
+  splitRepeatedNoteRuns(recordedAudio, sampleRate, entries, notes, stretchFor, starts);
   for (let i = 0; i < entries.length; i += 1) {
     const { stepIndex, quarter } = entries[i];
     const note = notes[stepIndex];
@@ -266,10 +277,12 @@ async function scoreInformed(
     // follows -- the rest is silence, not this note.
     const nextQuarter = i + 1 < entries.length ? entries[i + 1].quarter : Number.POSITIVE_INFINITY;
     const startSeconds = starts[i];
-    if (startSeconds === null) continue; // never reached: stays not_played
+    const stretch = stretchFor[i];
+    if (startSeconds === null || stretch === null) continue; // never reached, or jumped over: stays not_played
     const restFollows = quarter + note.durationQuarterNotes < nextQuarter - 1e-6;
-    const endSeconds = restFollows || i + 1 >= entries.length || starts[i + 1] === null
-      ? timeAtQuarter(path, Math.min(nextQuarter, quarter + note.durationQuarterNotes)) ?? path[path.length - 1].perfTimeSeconds
+    const nextInSameStretch = i + 1 < entries.length && starts[i + 1] !== null && stretchFor[i + 1] === stretch;
+    const endSeconds = restFollows || !nextInSameStretch
+      ? timeAtQuarter(stretch, Math.min(nextQuarter, quarter + note.durationQuarterNotes)) ?? stretch[stretch.length - 1].perfTimeSeconds
       : (starts[i + 1] as number);
 
     // The settle window skips the bow attack. A whole-span measurement barely notices a brief
@@ -299,6 +312,133 @@ async function scoreInformed(
   }
   onProgress?.(1);
   return records;
+}
+
+// Repeated notes ("D D"): chroma has nothing to see at the boundary between two identical pitches,
+// so the alignment's split inside such a run is arbitrary -- a badly-off first D could be
+// measured on the second D's audio and graded fine (simulated beginners: one real mistake in four
+// missed this way). The run's OUTER edges are reliable (the pitch changes there), so the inside
+// is re-split by the written rhythm, then each split moves to the deepest loudness dip nearby (a
+// bow change or re-articulation) if there is a clear one. Only inside same-pitch runs: snapping
+// every note start to loudness changes was tried and made fast passages much worse, because
+// string crossings make loudness jumps that aren't note starts.
+const REPEAT_SPLIT_SEARCH_FRACTION = 0.35; // of the shorter neighbouring note, either side
+const REPEAT_SPLIT_MAX_SEARCH_SECONDS = 0.15;
+const REPEAT_SPLIT_DIP_RATIO = 0.7; // dip must fall below this fraction of both sides' peaks
+const ENVELOPE_HOP_SECONDS = 0.005;
+
+function splitRepeatedNoteRuns(
+  audio: Float32Array,
+  sampleRate: number,
+  entries: readonly QuarterIndexEntry[],
+  notes: readonly CursorNoteInfo[],
+  stretchFor: ReadonlyArray<readonly AlignmentPoint[] | null>,
+  starts: Array<number | null>
+): void {
+  const hzOf = (i: number) => notes[entries[i].stepIndex]?.primaryFrequencyHz ?? null;
+  const endQuarterOf = (i: number) => entries[i].quarter + (notes[entries[i].stepIndex]?.durationQuarterNotes ?? 0);
+  const joined = (i: number) =>
+    i + 1 < entries.length &&
+    starts[i] !== null &&
+    starts[i + 1] !== null &&
+    stretchFor[i] === stretchFor[i + 1] &&
+    Math.abs(endQuarterOf(i) - entries[i + 1].quarter) < 1e-6;
+
+  let i = 0;
+  while (i < entries.length) {
+    let j = i;
+    const hz = hzOf(i);
+    while (hz !== null && joined(j) && hzOf(j + 1) === hz) j += 1;
+    if (j > i) {
+      const stretch = stretchFor[i] as AlignmentPoint[];
+      const runStart = starts[i] as number;
+      const runEndQuarter = endQuarterOf(j);
+      const runEnd = joined(j) ? (starts[j + 1] as number) : timeAtQuarter(stretch, runEndQuarter) ?? stretch[stretch.length - 1].perfTimeSeconds;
+      const quarterSpan = runEndQuarter - entries[i].quarter;
+      if (runEnd > runStart && quarterSpan > 0) {
+        const secondsPerQuarter = (runEnd - runStart) / quarterSpan;
+        for (let k = i + 1; k <= j; k += 1) {
+          const byRhythm = runStart + (entries[k].quarter - entries[i].quarter) * secondsPerQuarter;
+          const shorter = Math.min(entries[k].quarter - entries[k - 1].quarter, endQuarterOf(k) - entries[k].quarter) * secondsPerQuarter;
+          const reach = Math.min(REPEAT_SPLIT_SEARCH_FRACTION * shorter, REPEAT_SPLIT_MAX_SEARCH_SECONDS);
+          starts[k] = deepestDip(audio, sampleRate, byRhythm - reach, byRhythm + reach, starts[k - 1] as number, runEnd) ?? byRhythm;
+        }
+      }
+    }
+    i = j + 1;
+  }
+}
+
+function rmsAt(audio: Float32Array, sampleRate: number, centreSeconds: number): number {
+  const half = Math.round((ENVELOPE_HOP_SECONDS * sampleRate) / 2) * 2;
+  const centre = Math.round(centreSeconds * sampleRate);
+  let sum = 0;
+  let count = 0;
+  for (let n = Math.max(0, centre - half); n < Math.min(audio.length, centre + half); n += 1) {
+    sum += audio[n] * audio[n];
+    count += 1;
+  }
+  return count > 0 ? Math.sqrt(sum / count) : 0;
+}
+
+// The time of the quietest point in [from, to] if it is a clear dip -- below DIP_RATIO of the
+// loudest point on each side of it, looking out to `left` and `right` -- else null.
+function deepestDip(audio: Float32Array, sampleRate: number, from: number, to: number, left: number, right: number): number | null {
+  let best: number | null = null;
+  let bestLevel = Infinity;
+  for (let t = from; t <= to; t += ENVELOPE_HOP_SECONDS) {
+    const level = rmsAt(audio, sampleRate, t);
+    if (level < bestLevel) {
+      bestLevel = level;
+      best = t;
+    }
+  }
+  if (best === null) return null;
+  let peakBefore = 0;
+  for (let t = left; t < best; t += ENVELOPE_HOP_SECONDS) peakBefore = Math.max(peakBefore, rmsAt(audio, sampleRate, t));
+  let peakAfter = 0;
+  for (let t = best; t <= right; t += ENVELOPE_HOP_SECONDS) peakAfter = Math.max(peakAfter, rmsAt(audio, sampleRate, t));
+  return bestLevel < REPEAT_SPLIT_DIP_RATIO * Math.min(peakBefore, peakAfter) ? best : null;
+}
+
+// A step forward of more than this many quarter notes between two consecutive aligned frames
+// (~33 ms apart) is a jump, not playing: nobody plays 30 quarter notes a second.
+const JUMP_QUARTERS = 1;
+// A step back of more than this is the player going back (a jump, or DTW's stretches meeting).
+const BACKWARD_JUMP_QUARTERS = 0.5;
+
+export function splitAtBackwardJumps(path: readonly AlignmentPoint[]): AlignmentPoint[][] {
+  const stretches: AlignmentPoint[][] = [];
+  let current: AlignmentPoint[] = [];
+  let runningMax = -Infinity;
+  for (const point of path) {
+    if (current.length > 0 && point.quarter < runningMax - BACKWARD_JUMP_QUARTERS) {
+      stretches.push(current);
+      current = [];
+      runningMax = -Infinity;
+    }
+    current.push(point);
+    runningMax = Math.max(runningMax, point.quarter);
+  }
+  if (current.length > 0) stretches.push(current);
+  return stretches;
+}
+
+// When this stretch reaches `quarter`, or null if it never does -- including when it jumps over
+// it (a note skipped by "Jump to bar" was not played; interpolating across the jump would give
+// it a few milliseconds of whatever was sounding and grade that).
+export function reachedAt(stretch: readonly AlignmentPoint[], quarter: number): number | null {
+  if (stretch.length === 0 || quarter < stretch[0].quarter - 1e-9) return null;
+  let running = stretch[0].quarter;
+  for (let i = 1; i < stretch.length; i += 1) {
+    const q = Math.max(running, stretch[i].quarter);
+    if (q >= quarter) {
+      if (q - running > JUMP_QUARTERS && quarter > running + 1e-6 && quarter < q - 1e-6) return null;
+      break;
+    }
+    running = q;
+  }
+  return timeAtQuarter(stretch, quarter);
 }
 
 // Inverse of quarterAt: when the aligned path reaches `quarter`, or null if it never does.

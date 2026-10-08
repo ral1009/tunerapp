@@ -31,6 +31,16 @@ export interface PracticeHistoryEntry {
   summary: Record<string, unknown>;
 }
 
+// A bar whose notes don't add up to its time signature -- almost always a misread or missed note
+// in an OMR (photo) import. Score following can stall on one, so the app warns before practice.
+// measureNumber is 1-based by position in the part, the same numbering "Jump to bar" uses.
+export interface ScoreMeasureIssue {
+  measureNumber: number;
+  kind: "empty" | "short" | "long";
+  parsedQuarterNotes: number;
+  expectedQuarterNotes: number;
+}
+
 export interface ScoreDocument {
   title: string;
   composer: string;
@@ -42,4 +52,6 @@ export interface ScoreDocument {
   measures: ScoreMeasure[];
   annotations: ScoreAnnotation[];
   practiceHistory: PracticeHistoryEntry[];
+  // Bars that don't fit their time signature (see ScoreMeasureIssue); absent when none.
+  measureIssues?: ScoreMeasureIssue[];
 }

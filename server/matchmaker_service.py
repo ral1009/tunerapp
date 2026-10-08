@@ -27,7 +27,7 @@ import numpy as np
 from matchmaker import Matchmaker
 from matchmaker.dp import OnlineTimeWarpingArztFrame
 from matchmaker.matchmaker import DEFAULT_KWARGS, get_ppq
-from matchmaker.io.audio import BytesAudioStream
+from matchmaker.io.audio import BytesAudioStream, set_latency_stats
 from matchmaker.io.stream import STREAM_END
 from partitura.score import Part
 
@@ -75,6 +75,8 @@ REJECT_CHROMA_FLATNESS = 0.5
 # How far either side of the live tracker's final position the offline alignment looks for where
 # the take actually ended -- see LiveAligner.compute_offline_alignment.
 OFFLINE_END_SEARCH_SECONDS = 2
+# An end within this many frames (0.2 s) of the reference's last frame is treated as the last frame.
+OFFLINE_END_SNAP_FRAMES = 6
 
 # Reference features are a pure function of (score, tempo, sample rate), and recomputing them means
 # re-running fluidsynth synthesis plus chroma extraction on every session -- wasted work when the
@@ -125,6 +127,109 @@ def is_tonal_frame(chroma_frame: np.ndarray) -> bool:
     # Digital silence normalizes to an all-zero vector, whose mean is 0 -- maximally "peaked" by
     # the flatness measure, so it needs its own check.
     return peak > 0.0 and float(chroma.mean()) / peak <= REJECT_CHROMA_FLATNESS
+
+
+# The tonality test above lets anything with a clear pitch through, and so did talking (voiced
+# speech is tonal: flatness 0.15-0.45 on three TTS voices, inside the violin's 0.12-0.29) and the
+# ring of the open strings after the violin is bumped. Both walked the cursor forward and left the
+# notes they passed graded "unclear" (live report, 2026-10-08). PlayingGate adds three checks, set
+# on TTS speech and synthetic bumps (.scratch/gate_sim.py) and checked against real violin -- the
+# dev recordings and the user's two takes -- for how much playing they'd throw away:
+# - Energy below the violin's range (60-180 Hz; open G is 196 Hz): voiced male speech has its
+#   fundamental there, violin has nothing there at all (ratio 0.00 at the 95th percentile).
+# - To START accepting after a break, PLAYING_GATE_OPEN_FRAMES (~130 ms) of steady pitch class
+#   (consecutive chroma cosine >= PLAYING_GATE_STABILITY) whose level isn't falling: a bowed note
+#   holds its pitch and level, speech glides between syllables, and a bump's ring decays from the
+#   knock. Once open, the frames that led up to it are released too, so no note start is lost.
+# - Once open, any tonal frame keeps it open, and within PLAYING_GATE_RESUME_FRAMES (100 ms) of
+#   closing any tonal frame reopens it: a single non-tonal frame mid-passage (a string crossing, a
+#   scratchy bow change) shouldn't make fast playing re-earn the steady-pitch test -- without this
+#   it cost 1.5 s of a fast Corrente passage. Kept short because speech reuses it between
+#   syllables (0.5 s let a flat TTS voice through 65% of the time; 100 ms, 47%). A "must keep
+#   finding steady stretches to stay open" rule was also tried and never fired on anything the
+#   opening test hadn't already stopped.
+# Measured: violin frames kept 99.8% (fast Bach) and 98.8-99.6% (user takes); male TTS 0%, two
+# female TTS voices 11% and 47% (the 47% is a flat-prosody voice; real speech moves pitch more);
+# synthetic bumps 0%. Accepted speech frames still move the cursor, so this is fewer false
+# advances, not none.
+PLAYING_GATE_OPEN_FRAMES = 4
+PLAYING_GATE_STABILITY = 0.9
+PLAYING_GATE_OPEN_LEVEL_RATIO = 0.9
+PLAYING_GATE_RESUME_FRAMES = 3
+PLAYING_GATE_LOW_BAND_MAX = 0.05
+PLAYING_GATE_BACKFILL_FRAMES = 15
+
+
+def frame_band_stats(power: np.ndarray, sample_rate: int, n_fft: int) -> tuple[np.ndarray, np.ndarray]:
+    """(low-band ratio, rms) per frame from an STFT power array shaped (frames, bins)."""
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sample_rate)
+    low = power[:, (freqs > 60) & (freqs < 180)].sum(axis=1)
+    band = power[:, (freqs >= 180) & (freqs < 4000)].sum(axis=1) + 1e-12
+    rms = np.sqrt(power.sum(axis=1) / n_fft)
+    return low / band, rms
+
+
+class PlayingGate:
+    """Decides, frame by frame, whether the input is the violin being played -- see above.
+
+    ``push`` takes one frame (an opaque item plus its chroma vector, low-band ratio and rms) and
+    returns the items to pass on now: usually [] or [item], and on opening, the run of frames that
+    led up to it. Used by both the live stream and the post-take alignment so both see the same
+    frames.
+    """
+
+    def __init__(self) -> None:
+        self.open = False
+        self.accepted = 0
+        self.rejected = 0
+        self._recent: list[tuple[bool, np.ndarray, float]] = []  # (tonal, unit chroma, rms)
+        self._pending: list[object] = []  # tonal frames seen while closed, newest last
+        self._since_closed = PLAYING_GATE_RESUME_FRAMES + 1
+
+    def _stable(self, k: int) -> bool:
+        if len(self._recent) < k:
+            return False
+        window = self._recent[-k:]
+        if not all(tonal for tonal, _, _ in window):
+            return False
+        return all(float(a[1] @ b[1]) >= PLAYING_GATE_STABILITY for a, b in zip(window, window[1:]))
+
+    def push(self, item: object, chroma_frame: np.ndarray, low_ratio: float, rms: float) -> list:
+        chroma = np.asarray(chroma_frame, dtype=np.float32).reshape(-1)
+        tonal = is_tonal_frame(chroma) and low_ratio <= PLAYING_GATE_LOW_BAND_MAX
+        unit = chroma / (float(np.linalg.norm(chroma)) + 1e-9)
+        self._recent.append((tonal, unit, float(rms)))
+        del self._recent[:-PLAYING_GATE_OPEN_FRAMES]
+
+        if not self.open:
+            if not tonal:
+                self._since_closed += 1
+                self.rejected += len(self._pending) + 1
+                self._pending.clear()
+                return []
+            self._pending.append(item)
+            if len(self._pending) > PLAYING_GATE_BACKFILL_FRAMES:
+                self._pending.pop(0)
+                self.rejected += 1
+            levels = [r for _, _, r in self._recent]
+            resuming = self._since_closed <= PLAYING_GATE_RESUME_FRAMES
+            self._since_closed += 1
+            if resuming or (
+                self._stable(PLAYING_GATE_OPEN_FRAMES) and levels[-1] >= PLAYING_GATE_OPEN_LEVEL_RATIO * max(levels)
+            ):
+                self.open = True
+                released, self._pending = self._pending, []
+                self.accepted += len(released)
+                return released
+            return []
+
+        if not tonal:
+            self.open = False
+            self._since_closed = 1
+            self.rejected += 1
+            return []
+        self.accepted += 1
+        return [item]
 
 
 _soundfont_keeper: list = []  # see warm_up()
@@ -289,6 +394,31 @@ class _PatientBytesAudioStream(BytesAudioStream):
     ``stop_listening`` (which clears ``listen``) still takes effect.
     """
 
+    gate: PlayingGate
+
+    def _process_feature(self, target_audio: np.ndarray, f_time: float) -> None:
+        # The library's version (matchmaker.io.audio) with PlayingGate between the processor and
+        # the follower's queue. Same framing: the first block is zero-padded and its frame dropped.
+        if not hasattr(self, "gate"):
+            self.gate = PlayingGate()
+        if self.last_chunk is None:
+            target_audio = np.concatenate((np.zeros(self.cache_size, dtype=np.float32), target_audio))
+        else:
+            target_audio = np.concatenate((self.last_chunk, target_audio))
+        perf_time = self._emit_count * self.hop_length / float(self.sample_rate)
+        output = self.processor((target_audio, perf_time))
+        if self.last_chunk is not None:
+            self._emit_count += 1
+            n_fft = self.processor.n_fft
+            frame = target_audio[-n_fft:] * np.hanning(n_fft + 1)[:-1].astype(np.float32)
+            power = (np.abs(np.fft.rfft(frame)) ** 2)[None, :]
+            low, rms = frame_band_stats(power, self.sample_rate, n_fft)
+            for released in self.gate.push(output, output[0][-1], float(low[0]), float(rms[0])):
+                self.queue.put(released)
+        latency = time.time() - self.last_data_received
+        self.latency_stats = set_latency_stats(latency, self.latency_stats, self.input_index)
+        self.last_chunk = target_audio[-self.cache_size:]
+
     def run(self) -> None:
         self.start_listening()
         while self.listen:
@@ -317,8 +447,23 @@ class _GatedArztFollower(OnlineTimeWarpingArztFrame):
 
     rejected_frames: int = 0
     accepted_frames: int = 0
+    # Set from the socket thread by LiveAligner.seek(); applied here, on the follower's own thread,
+    # before the next frame (an int assignment is atomic, so no lock).
+    pending_seek: int | None = None
+
+    def _apply_seek(self, frame: int) -> None:
+        # Restart the path at `frame`: every accumulated cost is discarded and the only finite
+        # cell is the target in the "previous input" column, so the next frame's best path must
+        # start there. The follower only ever moves forward on its own; this is the one way back.
+        self.global_cost_matrix[:] = np.inf
+        self.global_cost_matrix[frame + 1, 0] = 0.0
+        self._current_frame = frame
+        self.current_index = self._frame_to_score_idx(frame)
 
     def step(self, input_features: np.ndarray) -> None:
+        seek, self.pending_seek = self.pending_seek, None
+        if seek is not None:
+            self._apply_seek(seek)
         if not is_tonal_frame(input_features):
             self.rejected_frames += 1
             return
@@ -424,6 +569,9 @@ class LiveAligner:
         self.data_queue: queue.Queue = queue.Queue()
         self._stopped = threading.Event()
         self._recorded_chunks: list[bytes] = []
+        self._recorded_samples = 0
+        # (sample offset in the recording, target reference frame, live frame just before the jump)
+        self._seeks: list[tuple[int, int, int]] = []
 
         self.matchmaker = _StreamingMatchmaker(
             cache_key=cache_key,
@@ -459,7 +607,29 @@ class LiveAligner:
         # excerpts (tens of seconds to a few minutes, ~11 MB/min at 48 kHz float32), and the
         # buffer lives only as long as this session object.
         self._recorded_chunks.append(payload)
+        self._recorded_samples += len(payload) // 4
         self.data_queue.put(payload)
+
+    def quarter_to_ref_frame(self, quarter: float) -> int:
+        part = self.score_part
+        quarter = min(max(quarter, self.quarter_origin), self.total_quarters)
+        beat = float(part.beat_map(part.inv_quarter_map(quarter)))
+        ref_frame_to_beat = np.asarray(self.matchmaker.score_follower._ref_frame_to_beat)
+        frame = int(np.searchsorted(ref_frame_to_beat, beat - 1e-9, side="left"))
+        return min(max(frame, 0), len(ref_frame_to_beat) - 1)
+
+    def seek(self, quarter: float) -> None:
+        """Move the live follower to ``quarter`` (the player jumped -- see "Jump to bar" in the app).
+
+        Recorded against the recording's sample count so the post-take alignment can align the
+        stretch before and after the jump separately: one DTW path over a take with a jump in it
+        would have to smear the jump across the notes around it.
+        """
+        follower = self.matchmaker.score_follower
+        frame = self.quarter_to_ref_frame(quarter)
+        live_before = int(getattr(follower, "_current_frame", 0))
+        self._seeks.append((self._recorded_samples, frame, live_before))
+        follower.pending_seek = frame
 
     def compute_offline_alignment(self) -> list[tuple[float, float]]:
         """Globally align the whole recorded take against the reference, after the fact.
@@ -496,17 +666,52 @@ class LiveAligner:
         # (Matchmaker.preprocess_score does exactly this over the whole synthesized score), so
         # both sides share a feature space by construction.
         features, _ = processor((audio, 0.0))
-        tonal = [i for i in range(features.shape[0]) if is_tonal_frame(features[i])]
+        # Same PlayingGate as the live stream, so talking or a bump in the take isn't aligned to
+        # notes here either.
+        power = np.abs(librosa.stft(audio, n_fft=processor.n_fft, hop_length=processor.hop_length, center=False)).T ** 2
+        low, rms = frame_band_stats(power[: features.shape[0]], self.sample_rate, processor.n_fft)
+        gate = PlayingGate()
+        tonal = []
+        for i in range(min(features.shape[0], low.shape[0])):
+            tonal.extend(gate.push(i, features[i], float(low[i]), float(rms[i])))
         if len(tonal) < 2:
             return []
-        perf = features[tonal]
 
         follower = self.matchmaker.score_follower
         reference = self.matchmaker.reference_features
         n_ref = reference.shape[0]
-        live_end = int(min(max(getattr(follower, "_current_frame", n_ref - 1), 0), n_ref - 1))
+        hop = processor.hop_length
+        tonal_frames = np.asarray(tonal)
+
+        # One stretch per jump: (first frame, end frame, reference start, live frame at its end).
+        live_final = int(min(max(getattr(follower, "_current_frame", n_ref - 1), 0), n_ref - 1))
+        stretches = []
+        start_frame, ref_start = 0, 0
+        for sample, target, live_before in self._seeks:
+            stretches.append((start_frame, sample // hop, ref_start, live_before))
+            start_frame, ref_start = sample // hop, target
+        stretches.append((start_frame, features.shape[0], ref_start, live_final))
+
+        result: list[tuple[float, float]] = []
+        for lo, hi, ref_lo, live_end in stretches:
+            frames = tonal_frames[(tonal_frames >= lo) & (tonal_frames < hi)] if tonal_frames.size else tonal_frames
+            if frames.size < 2 or ref_lo >= n_ref - 1:
+                continue
+            result.extend(self._align_stretch(features[frames], frames, ref_lo, max(live_end, ref_lo)))
+        return result
+
+    def _align_stretch(
+        self, perf: np.ndarray, frame_indices: np.ndarray, ref_lo: int, live_end: int
+    ) -> list[tuple[float, float]]:
+        import librosa
+
+        processor = self.matchmaker.processor
+        follower = self.matchmaker.score_follower
+        reference = self.matchmaker.reference_features
+        n_ref = reference.shape[0]
+        live_end = int(min(max(live_end, ref_lo), n_ref - 1))
         window = OFFLINE_END_SEARCH_SECONDS * FRAME_RATE
-        end_lo = max(1, live_end - window)
+        end_lo = max(ref_lo + 1, live_end - window)
         end_hi = min(n_ref, live_end + window + 1)
 
         # Accumulated costs over the widest candidate reference span, then the best end in the
@@ -516,14 +721,21 @@ class LiveAligner:
         # every candidate end, so backtrack from the chosen one instead of running DTW a second
         # time on the truncated reference (identical path, half the work).
         cost, steps = librosa.sequence.dtw(
-            X=reference[:end_hi].T, Y=perf.T, metric="cityblock", backtrack=False, return_steps=True
+            X=reference[ref_lo:end_hi].T, Y=perf.T, metric="cityblock", backtrack=False, return_steps=True
         )
         final_column = cost[:, -1]
         candidates = np.arange(end_lo, end_hi)
-        normalized = final_column[candidates] / (candidates + 1 + perf.shape[0])
+        normalized = final_column[candidates - ref_lo] / (candidates - ref_lo + 1 + perf.shape[0])
         end = int(candidates[int(np.argmin(normalized))])
+        # The reference stops 0.1 s after the last note starts (see generate_score_audio), so the
+        # last note owns only a few reference frames, and an end chosen a frame or two short of the
+        # final frame left it with no audio at all ("not played" on the last note of a take that
+        # clearly played it). An end that close to the final frame means the take reached the end
+        # of the piece: snap to the final frame so the take's tail lands on the last note.
+        if end_hi == n_ref and end >= n_ref - 1 - OFFLINE_END_SNAP_FRAMES:
+            end = n_ref - 1
 
-        path = _backtrack_from(steps, end)
+        path = _backtrack_from(steps, end - ref_lo)
 
         ref_frame_to_beat = follower._ref_frame_to_beat
         hop = processor.hop_length
@@ -532,7 +744,7 @@ class LiveAligner:
         # collapse to one point per performance frame at the middle of its reference span.
         spans: dict[int, list[int]] = {}
         for ref_idx, perf_idx in path:
-            spans.setdefault(int(perf_idx), []).append(int(ref_idx))
+            spans.setdefault(int(perf_idx), []).append(int(ref_idx) + ref_lo)
 
         perf_frames = sorted(spans)
         ref_frames = [spans[i][len(spans[i]) // 2] for i in perf_frames]
@@ -540,13 +752,13 @@ class LiveAligner:
         # Vectorized beat -> quarter (same maps as convert_beat_to_quarter); calling it once per
         # point was most of this function's run time (~3 s of 4.8 s on a 2-minute take).
         quarters = np.asarray(self.score_part.quarter_map(self.score_part.inv_beat_map(beats)), dtype=float)
-        times = (np.asarray(tonal)[perf_frames] * hop + centre_offset) / self.sample_rate
+        times = (frame_indices[perf_frames] * hop + centre_offset) / self.sample_rate
         return [(float(t), float(q)) for t, q in zip(times, quarters)]
 
     def frame_stats(self) -> tuple[int, int]:
-        """(accepted, rejected) live frames so far -- see _GatedArztFollower."""
-        follower = self.matchmaker.score_follower
-        return getattr(follower, "accepted_frames", 0), getattr(follower, "rejected_frames", 0)
+        """(accepted, rejected) live frames so far -- see PlayingGate."""
+        gate = getattr(self.matchmaker.stream, "gate", None)
+        return (gate.accepted, gate.rejected) if gate is not None else (0, 0)
 
     def push_sentinel(self) -> None:
         """Unblock the worker thread's pending ``queue.get()`` so it can exit.

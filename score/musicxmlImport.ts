@@ -1,4 +1,4 @@
-import type { ScoreDocument, ScoreMeasure, ScoreNote } from "./schema";
+import type { ScoreDocument, ScoreMeasure, ScoreMeasureIssue, ScoreNote } from "./schema";
 import { inferTimeSignature } from "./timeSignatureInference";
 
 const MAJOR_KEY_BY_FIFTHS: Record<number, string> = {
@@ -245,7 +245,9 @@ export async function importMusicXmlToScore(xml: string, options: MusicXmlImport
   // gets its own explicit reverting entry instead of silently inheriting the correction forever.
   let effectiveTimeSignature = timeSignature;
 
-  const measures: ScoreMeasure[] = Array.from(partElement.querySelectorAll("measure")).map((measureElement, measureIndex) => {
+  const measureElements = Array.from(partElement.querySelectorAll("measure"));
+  const measureIssues: ScoreMeasureIssue[] = [];
+  const measures: ScoreMeasure[] = measureElements.map((measureElement, measureIndex) => {
     const notes: ScoreNote[] = [];
     let positionDivisions = 0;
     let primaryVoice: string | null = null;
@@ -364,6 +366,21 @@ export async function importMusicXmlToScore(xml: string, options: MusicXmlImport
             `(parsed ${measureTotalQuarterNotes} quarter-note beats).`
         );
       } else {
+        // A short first bar is a pickup and a short last bar completes it -- normal notation,
+        // not a misread. So is any bar the source marks implicit (MusicXML's own pickup flag).
+        const isPickup =
+          measureElement.getAttribute("implicit") === "yes" ||
+          (measureTotalQuarterNotes < expectedQuarterNotes &&
+            measureTotalQuarterNotes > 0 &&
+            (measureIndex === 0 || measureIndex === measureElements.length - 1));
+        if (!isPickup) {
+          measureIssues.push({
+            measureNumber: measureIndex + 1,
+            kind: measureTotalQuarterNotes <= 0.001 ? "empty" : measureTotalQuarterNotes < expectedQuarterNotes ? "short" : "long",
+            parsedQuarterNotes: measureTotalQuarterNotes,
+            expectedQuarterNotes
+          });
+        }
         console.warn(
           `Measure ${measureIndex + 1}: parsed ${measureTotalQuarterNotes} quarter-note beats but the time signature (${timeSignature}) expects ${expectedQuarterNotes}. ` +
             "The OMR source's MusicXML may be inaccurate for this measure."
@@ -411,6 +428,7 @@ export async function importMusicXmlToScore(xml: string, options: MusicXmlImport
     sourceType: "musicxml",
     measures,
     annotations: [],
-    practiceHistory: []
+    practiceHistory: [],
+    ...(measureIssues.length > 0 ? { measureIssues } : {})
   };
 }

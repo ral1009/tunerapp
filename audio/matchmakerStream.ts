@@ -335,6 +335,17 @@ export class MatchmakerStream {
     }
   }
 
+  // The player jumped to another place in the score ("Jump to bar"). Sent on the same socket as
+  // the audio, so the server knows exactly which sample the jump happened at -- it aligns the
+  // take before and after the jump separately once the take ends. False if the socket is gone.
+  seek(quarter: number): boolean {
+    if (this.socket?.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    this.socket.send(JSON.stringify({ type: "seek", quarter }));
+    return true;
+  }
+
   // The take as sent, on the same timeline as the server's copy.
   getRecordedAudio(): Float32Array {
     const total = this.recordedChunks.reduce((sum, chunk) => sum + chunk.length, 0);

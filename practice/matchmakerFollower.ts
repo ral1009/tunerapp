@@ -60,6 +60,8 @@ export interface MatchmakerTraceEntry {
 }
 
 const TRACE_BUFFER_SIZE = 200;
+// After a jump, positions the server sent before it heard about it are ignored for this long.
+const JUMP_SETTLE_MS = 400;
 
 export class MatchmakerScoreFollower {
   private readonly cursor: ScoreCursor;
@@ -77,6 +79,7 @@ export class MatchmakerScoreFollower {
   private pendingStepIndex: number | null = null;
   private pendingCount = 0;
   private lastQuarter: number | null = null;
+  private ignorePositionsUntilMs = 0;
   private trace: MatchmakerTraceEntry[] = [];
   private pendingFinalStatus: "completed" | "stopped" | null = null;
   private scoringSource: "offline" | "live" | null = null;
@@ -118,6 +121,9 @@ export class MatchmakerScoreFollower {
     }
 
     this.lastQuarter = quarter;
+    if (performance.now() < this.ignorePositionsUntilMs) {
+      return this.getState();
+    }
     const target = this.targetStepIndexFor(quarter);
     if (target === null || target === this.current?.stepIndex) {
       this.pendingStepIndex = null;
@@ -138,6 +144,24 @@ export class MatchmakerScoreFollower {
 
     this.pendingStepIndex = null;
     this.pendingCount = 0;
+    this.moveTo(target, quarter);
+    return this.emit();
+  }
+
+  // The player jumped ("Jump to bar"): move straight there, no stability wait. Positions the
+  // server computed before it heard about the jump can still be in flight for a moment; ignore
+  // them so they can't drag the cursor back.
+  jumpToQuarter(quarter: number): ScoreFollowerState {
+    if (this.status !== "in_progress") {
+      return this.getState();
+    }
+    const target = this.targetStepIndexFor(quarter);
+    if (target === null) {
+      return this.getState();
+    }
+    this.pendingStepIndex = null;
+    this.pendingCount = 0;
+    this.ignorePositionsUntilMs = performance.now() + JUMP_SETTLE_MS;
     this.moveTo(target, quarter);
     return this.emit();
   }
