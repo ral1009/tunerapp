@@ -1,3 +1,21 @@
+const twiddleCache = new Map<number, { cos: Float64Array; sin: Float64Array }>();
+
+// cos/sin of -2*pi*k/n for k < n/2, computed once per FFT size.
+function twiddles(n: number): { cos: Float64Array; sin: Float64Array } {
+  let table = twiddleCache.get(n);
+  if (!table) {
+    const half = n >> 1;
+    table = { cos: new Float64Array(half), sin: new Float64Array(half) };
+    for (let k = 0; k < half; k += 1) {
+      const angle = (-2 * Math.PI * k) / n;
+      table.cos[k] = Math.cos(angle);
+      table.sin[k] = Math.sin(angle);
+    }
+    twiddleCache.set(n, table);
+  }
+  return table;
+}
+
 // Iterative radix-2 Cooley-Tukey FFT. real.length/imag.length must be a power of 2.
 export function fftInPlace(real: Float64Array, imag: Float64Array): void {
   const n = real.length;
@@ -25,15 +43,17 @@ export function fftInPlace(real: Float64Array, imag: Float64Array): void {
     }
   }
 
-  // Iterative butterfly passes.
+  // Iterative butterfly passes. Twiddle factors come from a per-size table rather than a fresh
+  // cos/sin per butterfly: that was most of the cost of the post-take scorer's large FFTs
+  // (n log n trig calls -- ~half a million for one 32k-point spectrum).
+  const { cos, sin } = twiddles(n);
   for (let size = 2; size <= n; size <<= 1) {
     const halfSize = size >> 1;
-    const angleStep = (-2 * Math.PI) / size;
+    const stride = n / size;
     for (let start = 0; start < n; start += size) {
       for (let offset = 0; offset < halfSize; offset += 1) {
-        const angle = angleStep * offset;
-        const wReal = Math.cos(angle);
-        const wImag = Math.sin(angle);
+        const wReal = cos[offset * stride];
+        const wImag = sin[offset * stride];
 
         const evenIndex = start + offset;
         const oddIndex = start + offset + halfSize;

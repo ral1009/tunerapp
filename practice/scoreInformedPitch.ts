@@ -113,7 +113,9 @@ function harmonicStandsOut(spectrum: Float64Array, hz: number, binHz: number): b
 
 // Copy of the spectrum with every partial of f0 replaced by the spectrum's median, over the
 // partial's main lobe and first sidelobes, measured in bins of the UNPADDED span.
-function maskHarmonics(spectrum: Float64Array, f0: number, binHz: number, unpaddedBinHz: number): Float64Array {
+function maskHarmonics(spectrum: Float64Array, fundamentalsHz: readonly number[], binHz: number, unpaddedBinHz: number): Float64Array {
+  // One copy for every pitch being masked (this note, its neighbours, the open strings) rather
+  // than one full-spectrum copy per pitch, and only up to where salience ever reads.
   const out = Float64Array.from(spectrum);
   // Median from every 8th bin: sorting all of a 64k-bin spectrum per note dominated run time.
   const sample = new Float64Array(Math.ceil(spectrum.length / 8));
@@ -122,10 +124,13 @@ function maskHarmonics(spectrum: Float64Array, f0: number, binHz: number, unpadd
   const floor = sample[Math.floor(sample.length / 2)];
   // +-4 bins: the main lobe (+-2) plus the first sidelobes, which log compression keeps visible.
   const halfWidthHz = 4 * unpaddedBinHz;
-  for (let h = 1; h * f0 < spectrum.length * binHz; h += 1) {
-    const from = Math.max(0, Math.floor((h * f0 - halfWidthHz) / binHz));
-    const to = Math.min(spectrum.length - 1, Math.ceil((h * f0 + halfWidthHz) / binHz));
-    for (let i = from; i <= to; i += 1) out[i] = floor;
+  const topHz = Math.min(spectrum.length * binHz, MAX_HARMONIC_HZ * 1.1);
+  for (const f0 of fundamentalsHz) {
+    for (let h = 1; h * f0 < topHz; h += 1) {
+      const from = Math.max(0, Math.floor((h * f0 - halfWidthHz) / binHz));
+      const to = Math.min(spectrum.length - 1, Math.ceil((h * f0 + halfWidthHz) / binHz));
+      for (let i = from; i <= to; i += 1) out[i] = floor;
+    }
   }
   return out;
 }
@@ -213,13 +218,9 @@ export function measureScoreInformedPitch(
   //   overlapped 100 ms notes read without masking it, 36% with). A wrong note actually played is
   //   in neither list, so it stays unmasked and is still rejected.
   const f0Best = expectedHz * Math.pow(2, ((bestIndex - steps) * SEARCH_STEP_CENTS) / 1200);
-  let masked = maskHarmonics(spectrum, f0Best, binHz, sampleRate / span.length);
-  for (const hz of [...contextHz, ...OPEN_STRINGS_HZ]) {
-    // Skip anything close enough to this note that masking it would mask this note too.
-    if (hz > 0 && Math.abs(1200 * Math.log2(hz / expectedHz)) > SEARCH_CENTS) {
-      masked = maskHarmonics(masked, hz, binHz, sampleRate / span.length);
-    }
-  }
+  // Skip anything close enough to this note that masking it would mask this note too.
+  const others = [...contextHz, ...OPEN_STRINGS_HZ].filter((hz) => hz > 0 && Math.abs(1200 * Math.log2(hz / expectedHz)) > SEARCH_CENTS);
+  const masked = maskHarmonics(spectrum, [f0Best, ...others], binHz, sampleRate / span.length);
   const reference: number[] = [];
   for (let c = -1750; c <= 1750; c += 125) {
     if (Math.abs(c) < SEARCH_CENTS + 50) continue;

@@ -19,13 +19,15 @@ from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 import xml.etree.ElementTree as ET
 
+import homr_runner
 from position_manager import position_manager
 
 BASE_DIR = Path(__file__).resolve().parent
 TMP_ROOT = BASE_DIR / "tmp"
 TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
-HOMR_TIMEOUT_SECONDS = int(os.environ.get("HOMR_TIMEOUT_SECONDS", "60"))
+# 120 s: a long page can legitimately take over a minute on CPU.
+HOMR_TIMEOUT_SECONDS = int(os.environ.get("HOMR_TIMEOUT_SECONDS", "120"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("homr_sheet_parser")
@@ -67,6 +69,8 @@ def _warm_up_alignment() -> None:
             logger.info("Alignment warm-up skipped (alignment dependencies unavailable)")
 
     threading.Thread(target=run, name="align-warmup", daemon=True).start()
+    # Same idea for HOMR: load its models before the first photo upload, not during it.
+    threading.Thread(target=homr_runner.start_worker, name="homr-warmup", daemon=True).start()
 
 
 def _note_name_to_frequency(note_name: str) -> float | None:
@@ -147,42 +151,13 @@ async def parse_sheet(file: UploadFile = File(...)) -> JSONResponse:
         contents = await file.read()
         uploaded_path.write_bytes(contents)
 
-        result = subprocess.run(
-            # `--with "opencv-python<5"` is load-bearing, not a version preference. homr depends on
-            # opencv-python-headless (<5) while its rapidocr dependency declares opencv-python with
-            # no upper bound; both distributions install into the same cv2/ package directory and
-            # overwrite each other. That was harmless while every resolution landed on 4.x, but
-            # once OpenCV 5.0 shipped, an unpinned rebuild of the uvx environment paired a 5.x
-            # Python shim with a 4.x binary and homr failed at import
-            # (AttributeError: module 'cv2' has no attribute 'gapi_wip_gst_GStreamerPipeline').
-            # Constraining both back to 4.x restores the previous, working state.
-            ["uvx", "--with", "opencv-python<5", "homr", str(uploaded_path)],
-            capture_output=True,
-            timeout=HOMR_TIMEOUT_SECONDS,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            logger.error(
-                "homr exited with code %s for %s\nstdout: %s\nstderr: %s",
-                result.returncode,
-                file.filename,
-                result.stdout,
-                result.stderr,
-            )
+        # Off the event loop: HOMR takes tens of seconds, and calling it inline froze the whole
+        # server -- every open alignment WebSocket included -- until it finished.
+        try:
+            xml_path = await asyncio.to_thread(homr_runner.parse, uploaded_path, HOMR_TIMEOUT_SECONDS)
+        except homr_runner.HomrError as error:
+            logger.error("homr failed for %s: %s", file.filename, error)
             return JSONResponse(status_code=502, content={"error": "HOMR failed to parse the sheet image."})
-
-        xml_candidates = sorted(temp_dir.glob("*.musicxml"))
-        if not xml_candidates:
-            logger.error(
-                "homr produced no .musicxml output for %s\nstdout: %s\nstderr: %s",
-                file.filename,
-                result.stdout,
-                result.stderr,
-            )
-            return JSONResponse(status_code=422, content={"error": "No MusicXML output was generated."})
-
-        xml_path = xml_candidates[0]
         created_paths.append(xml_path)
 
         try:

@@ -14,6 +14,7 @@ like that is needed here.
 from __future__ import annotations
 
 import hashlib
+import os
 import logging
 import queue
 import threading
@@ -186,6 +187,98 @@ def warm_up() -> None:
         logger.exception("Alignment warm-up failed; the first session will be slower")
 
 
+def _backtrack_from(steps: np.ndarray, end: int) -> list[tuple[int, int]]:
+    """Optimal DTW path from (0, 0) to (end, last column), read off librosa's step matrix.
+
+    librosa's own dtw_backtracking only accepts a start row in subsequence mode. This follows the
+    same default step set (sigma = [[1, 1], [0, 1], [1, 0]]) that librosa.sequence.dtw used to
+    fill ``steps``, so the path is the one a full second dtw() call on reference[:end + 1] returns.
+    """
+    sigma = ((1, 1), (0, 1), (1, 0))
+    i, j = end, steps.shape[1] - 1
+    path = [(i, j)]
+    while i > 0 or j > 0:
+        if i == 0:
+            j -= 1
+        elif j == 0:
+            i -= 1
+        else:
+            di, dj = sigma[int(steps[i, j])]
+            i, j = i - di, j - dj
+        path.append((i, j))
+    return path[::-1]
+
+
+# How the reference audio for a score is made before chroma extraction. "additive" (default):
+# a small numpy synthesizer, below. "fluidsynth": the library's own path (partitura renders the
+# score with a piano soundfont). Both go through the same chroma processor, so the reference stays
+# in the feature space live audio is compared in.
+REFERENCE_SYNTH = os.environ.get("REFERENCE_SYNTH", "additive")
+_ADDITIVE_HARMONICS = 8
+_ADDITIVE_DECAY_SECONDS = 1.0
+
+
+def additive_score_audio(score_part: Part, tempo: float, sample_rate: int) -> np.ndarray:
+    """Reference audio for alignment without a soundfont: each note as decaying harmonics.
+
+    Timing is exactly matchmaker.utils.misc.generate_score_audio's -- the same per-note tempo
+    (scaled by the active time signature's beat type), the same leading pad to the first onset,
+    and the same cut 0.1 s after the last onset -- so frame i still maps to the beat that
+    _build_ref_frame_to_beat expects. What changes is the sound: fluidsynth's sampled piano is
+    replaced by 1/h-weighted harmonics with a soft attack and exponential decay. Chroma only
+    looks at pitch-class energy, which both produce; this needs no soundfont, renders in a
+    fraction of the time, and is a few lines in any language -- unlike fluidsynth, which can't
+    ship in a phone app.
+    """
+    from partitura.utils.music import ensure_notearray, performance_notearray_from_score_notearray
+
+    note_array = ensure_notearray(score_part)
+    if np.min(note_array["onset_beat"]) <= 0:
+        note_array["onset_beat"] = note_array["onset_beat"] + np.min(note_array["onset_beat"])
+    # get_current_note_bpm, vectorized: tempo * beat_type / 4 of the latest time signature at or
+    # before each onset (looked up once per note in the library -- seconds on a long score).
+    onset_times = np.asarray(score_part.inv_beat_map(note_array["onset_beat"]))
+    changes = sorted((ts.start.t, ts.beat_type) for ts in score_part.time_sigs)
+    bpm = np.full(len(note_array), float(tempo))
+    for start, beat_type in changes:
+        bpm[onset_times >= start] = beat_type / 4 * tempo
+    performed = performance_notearray_from_score_notearray(
+        snote_array=note_array, bpm=np.column_stack([note_array["onset_beat"], bpm])
+    )
+
+    onsets = performed["onset_sec"]
+    offsets = onsets + performed["duration_sec"]
+    audio = np.zeros(int(np.ceil(offsets.max() * sample_rate)) + 1, dtype=np.float64)
+    weights = 1.0 / np.arange(1, _ADDITIVE_HARMONICS + 1)
+    for pitch, onset, offset in zip(performed["pitch"], onsets, offsets):
+        start = int(onset * sample_rate)
+        length = max(1, int((offset - onset) * sample_rate))
+        t = np.arange(length) / sample_rate
+        f0 = 440.0 * 2 ** ((int(pitch) - 69) / 12)
+        harmonics = [h for h in range(1, _ADDITIVE_HARMONICS + 1) if h * f0 < sample_rate / 2]
+        tone = sum(weights[h - 1] * np.sin(2 * np.pi * h * f0 * t) for h in harmonics)
+        envelope = np.minimum(1.0, t / 0.005) * np.exp(-t / _ADDITIVE_DECAY_SECONDS)
+        envelope *= np.minimum(1.0, (length - np.arange(length)) / (0.03 * sample_rate))
+        audio[start:start + length] += tone * envelope
+    peak = np.max(np.abs(audio))
+    if peak > 0:
+        audio /= peak
+
+    # Same padding and truncation as generate_score_audio.
+    first_onset_in_beat = score_part.note_array()["onset_beat"].min()
+    first_onset_in_time = (
+        score_part.inv_beat_map(first_onset_in_beat)
+        / score_part.quarter_duration_map(score_part.inv_beat_map(first_onset_in_beat))
+        * (60 / tempo)
+    )
+    audio = np.pad(audio, (int(first_onset_in_time * sample_rate), 0))
+    last_onset_in_div = np.floor(score_part.note_array()["onset_div"].max())
+    last_onset_in_time = (
+        last_onset_in_div / score_part.quarter_duration_map(score_part.inv_beat_map(last_onset_in_div)) * (60 / tempo)
+    )
+    return audio[: int((last_onset_in_time + 0.1) * sample_rate)].astype(np.float32)
+
+
 class _PatientBytesAudioStream(BytesAudioStream):
     """BytesAudioStream that waits indefinitely for the next chunk instead of ending the stream.
 
@@ -285,17 +378,23 @@ class _StreamingMatchmaker(Matchmaker):
         return np.asarray(self.score_part.beat_map(timeline), dtype=float)
 
     def preprocess_score(self):
+        cache_key = f"{self._cache_key}:{REFERENCE_SYNTH}"
         with _reference_cache_lock:
-            cached = _reference_cache.get(self._cache_key)
+            cached = _reference_cache.get(cache_key)
             if cached is not None:
-                _reference_cache.move_to_end(self._cache_key)
+                _reference_cache.move_to_end(cache_key)
                 logger.info("Reference features cache hit for %s", self._cache_key[:12])
                 return cached
 
-        features = super().preprocess_score()
+        if REFERENCE_SYNTH == "additive" and self.input_type == "audio":
+            score_audio = additive_score_audio(self.score_part, self.tempo, self.sample_rate)
+            features, _ = self.processor((score_audio, 0.0))
+            self.processor.reset()
+        else:
+            features = super().preprocess_score()
 
         with _reference_cache_lock:
-            _reference_cache[self._cache_key] = features
+            _reference_cache[cache_key] = features
             while len(_reference_cache) > _REFERENCE_CACHE_MAX_ENTRIES:
                 _reference_cache.popitem(last=False)
         return features
@@ -413,14 +512,18 @@ class LiveAligner:
         # Accumulated costs over the widest candidate reference span, then the best end in the
         # window. Normalized by path length so a longer reference isn't penalized just for
         # being longer.
-        cost = librosa.sequence.dtw(X=reference[:end_hi].T, Y=perf.T, metric="cityblock", backtrack=False)
+        # One DTW pass: the step matrix of the widest span already contains the optimal path to
+        # every candidate end, so backtrack from the chosen one instead of running DTW a second
+        # time on the truncated reference (identical path, half the work).
+        cost, steps = librosa.sequence.dtw(
+            X=reference[:end_hi].T, Y=perf.T, metric="cityblock", backtrack=False, return_steps=True
+        )
         final_column = cost[:, -1]
         candidates = np.arange(end_lo, end_hi)
         normalized = final_column[candidates] / (candidates + 1 + perf.shape[0])
         end = int(candidates[int(np.argmin(normalized))])
 
-        _, path = librosa.sequence.dtw(X=reference[: end + 1].T, Y=perf.T, metric="cityblock", backtrack=True)
-        path = path[::-1]
+        path = _backtrack_from(steps, end)
 
         ref_frame_to_beat = follower._ref_frame_to_beat
         hop = processor.hop_length
@@ -431,15 +534,14 @@ class LiveAligner:
         for ref_idx, perf_idx in path:
             spans.setdefault(int(perf_idx), []).append(int(ref_idx))
 
-        points: list[tuple[float, float]] = []
-        for perf_idx in sorted(spans):
-            refs = spans[perf_idx]
-            ref_idx = refs[len(refs) // 2]
-            beat = float(ref_frame_to_beat[min(ref_idx, len(ref_frame_to_beat) - 1)])
-            original_frame = tonal[perf_idx]
-            perf_time = (original_frame * hop + centre_offset) / self.sample_rate
-            points.append((perf_time, convert_beat_to_quarter(self.score_part, beat)))
-        return points
+        perf_frames = sorted(spans)
+        ref_frames = [spans[i][len(spans[i]) // 2] for i in perf_frames]
+        beats = np.asarray(ref_frame_to_beat)[np.minimum(ref_frames, len(ref_frame_to_beat) - 1)]
+        # Vectorized beat -> quarter (same maps as convert_beat_to_quarter); calling it once per
+        # point was most of this function's run time (~3 s of 4.8 s on a 2-minute take).
+        quarters = np.asarray(self.score_part.quarter_map(self.score_part.inv_beat_map(beats)), dtype=float)
+        times = (np.asarray(tonal)[perf_frames] * hop + centre_offset) / self.sample_rate
+        return [(float(t), float(q)) for t, q in zip(times, quarters)]
 
     def frame_stats(self) -> tuple[int, int]:
         """(accepted, rejected) live frames so far -- see _GatedArztFollower."""

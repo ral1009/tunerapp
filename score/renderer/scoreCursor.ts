@@ -122,7 +122,7 @@ export interface ScoreCursor {
   // end-of-score.
   advanceToNextNote(): CursorNoteInfo | null;
   // Look ahead to whatever advanceToNextNote() would land on, without actually moving the cursor
-  // (walks forward then rewinds with the same step count via osmdCursor.previous()). Null at
+  // (walks forward, then restores a saved copy of the cursor's position). Null at
   // end-of-score. For practice/cursor.ts to sanity-check a candidate onset's pitch against the
   // *upcoming* note before committing to an advance.
   peekNextNote(): CursorNoteInfo | null;
@@ -195,12 +195,24 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
   // outright). Must be called with the cursor positioned exactly at the just-landed note -- always
   // rewinds back to that same position before returning, since the real cursor position must
   // remain wherever the caller found the landing.
+  // Look-ahead helpers walk the cursor and must leave it exactly where it was. They used to rewind
+  // by calling osmdCursor.previous() once per step taken, but OSMD's previous() throws
+  // ("Cannot read properties of undefined (reading 'StaffEntries')") when stepping back across an
+  // empty measure -- which OMR output produces (a photo-imported score with a 0-beat bar crashed
+  // every Matchmaker session at listNotes(), leaving the page on "Preparing score..." forever).
+  // Restoring a clone of the iterator puts the cursor back without walking at all.
+  function savePosition(): () => void {
+    const saved = osmdCursor.iterator.clone();
+    return () => {
+      osmdCursor.iterator = saved.clone();
+    };
+  }
+
   function accumulateTiedContinuationQuarterNotes(): number {
     let extra = 0;
-    let steps = 0;
+    const restore = savePosition();
     while (!osmdCursor.Iterator.EndReached) {
       osmdCursor.next();
-      steps += 1;
       const notesHere = osmdCursor.NotesUnderCursor();
       const continuation = notesHere.find((note) => isTieContinuation(note) || isSlurredSamePitchContinuation(note));
       if (!continuation) {
@@ -208,9 +220,7 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
       }
       extra += continuation.Length.RealValue * 4;
     }
-    for (let i = 0; i < steps; i += 1) {
-      osmdCursor.previous();
-    }
+    restore();
     return extra;
   }
 
@@ -289,18 +299,17 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
     return landOnPreviousNonRestNote();
   }
 
-  // Walks forward up to `count` non-rest notes without moving the real cursor position (rewinds
-  // with the same number of previous() calls it took to get there), tagging each landed-on note
+  // Walks forward up to `count` non-rest notes without moving the real cursor position (restores
+  // a saved copy of the position afterwards), tagging each landed-on note
   // with its 1-based forward offset from the current position.
   function peekAhead(count: number): Array<{ offset: number; note: CursorNoteInfo }> {
     const results: Array<{ offset: number; note: CursorNoteInfo }> = [];
-    let rawSteps = 0;
+    const restore = savePosition();
     let noteOffset = 0;
     let precedingRestQuarterNotes = 0;
 
     while (noteOffset < count && !osmdCursor.Iterator.EndReached) {
       osmdCursor.next();
-      rawSteps += 1;
       const allNotes = osmdCursor.NotesUnderCursor();
       const notes = allNotes.filter(isTickable);
       if (notes.length > 0) {
@@ -325,9 +334,7 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
       }
     }
 
-    for (let i = 0; i < rawSteps; i += 1) {
-      osmdCursor.previous();
-    }
+    restore();
 
     return results;
   }
@@ -337,12 +344,11 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
   // comment.
   function peekBehind(count: number): Array<{ offset: number; note: CursorNoteInfo }> {
     const results: Array<{ offset: number; note: CursorNoteInfo }> = [];
-    let rawSteps = 0;
+    const restore = savePosition();
     let noteOffset = 0;
 
     while (noteOffset < count && !osmdCursor.Iterator.FrontReached) {
       osmdCursor.previous();
-      rawSteps += 1;
       const notes = osmdCursor.NotesUnderCursor().filter(isTickable);
       if (notes.length > 0) {
         noteOffset += 1;
@@ -363,9 +369,7 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
       }
     }
 
-    for (let i = 0; i < rawSteps; i += 1) {
-      osmdCursor.next();
-    }
+    restore();
 
     return results;
   }
@@ -422,10 +426,9 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
         return null;
       }
 
-      let steps = 0;
+      const restore = savePosition();
       let precedingRestQuarterNotes = 0;
       osmdCursor.next();
-      steps += 1;
 
       let peeked: CursorNoteInfo | null = null;
       while (!osmdCursor.Iterator.EndReached) {
@@ -447,12 +450,9 @@ export function createScoreCursor(getCursor: () => OsmdCursor, redraw: () => voi
         }
         precedingRestQuarterNotes += restDurationQuarterNotes(allNotes);
         osmdCursor.next();
-        steps += 1;
       }
 
-      for (let i = 0; i < steps; i += 1) {
-        osmdCursor.previous();
-      }
+      restore();
 
       // Restore the visual cursor to match the real (rewound) logical position immediately --
       // called on every frame during a pending transition (practice/cursor.ts), so any visual

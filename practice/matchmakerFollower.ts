@@ -354,8 +354,18 @@ export class MatchmakerScoreFollower {
   // Verdicts are recomputed from samples on every read rather than frozen when a note is left --
   // idempotent, and it means a revisited note's verdict reflects all of its samples, not just the
   // ones collected before the first time the cursor moved away.
+  //
+  // Except after applyOfflineHistory(): those verdicts come from the post-take scorer and are
+  // final. Recomputing them here applied the LIVE rule (minSamplesForVerdict samples) to the
+  // score-informed method's single whole-span measurement per note, and turned every graded note
+  // -- and every "unmeasured" one -- into "not_played". Found in the first full live-loop run
+  // (headless Chrome, a recording as the microphone): tracking reached all 42 notes, the summary
+  // said 42 not played.
   private buildHistory(): NoteAccuracyRecord[] {
     const history = [...this.records.values()].sort((a, b) => a.stepIndex - b.stepIndex);
+    if (this.scoringSource === "offline") {
+      return history;
+    }
     for (const record of history) {
       const averageCentsOff = median(record.centsOffSamples);
       record.averageCentsOff = averageCentsOff;

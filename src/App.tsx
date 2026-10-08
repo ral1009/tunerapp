@@ -23,6 +23,7 @@ import {
 import { MatchmakerStream, type MatchmakerStreamStatus } from "../audio/matchmakerStream";
 import { createBeatClock, computeTimeSignatureSegments, type BeatClock, type ClickSubdivision } from "../practice/metronome";
 import { DEFAULT_GRADING, summarizePracticeSession, type GradeReference } from "../practice/reviewSummary";
+import { downloadTake, type SavedTake } from "../practice/takeExport";
 
 type ImportState = "idle" | "loading" | "success" | "error";
 
@@ -176,6 +177,10 @@ export default function App(): ReactElement {
   // Post-practice scoring: whether the server's alignment has arrived and local scoring begun (the
   // fallback timer stands down once it has), and how far along it is.
   const offlineScoringStartedRef = useRef(false);
+  // The most recent Matchmaker take, kept for "Download this take" (practice/takeExport.ts). The
+  // history is filled in at download time from the follower's final state.
+  const lastTakeRef = useRef<{ take: Omit<SavedTake, "history" | "scoringSource" | "savedAt">; audio: Float32Array } | null>(null);
+  const [takeAvailable, setTakeAvailable] = useState(false);
   const [offlineScoringProgress, setOfflineScoringProgress] = useState<number | null>(null);
   const [matchmakerError, setMatchmakerError] = useState<string | null>(null);
   // How the finished take is graded -- see practice/reviewSummary.ts. "own" by default.
@@ -522,14 +527,31 @@ export default function App(): ReactElement {
 
     offlineScoringStartedRef.current = false;
     setOfflineScoringProgress(null);
+    lastTakeRef.current = null;
+    setTakeAvailable(false);
 
     // Snapshot of how the live tuner is detecting pitch right now, so the post-practice pass runs
     // the detector exactly the same way over the recording (see OfflineDetectorSetup).
     const liveGainScalar = captureState.gainScalar;
     const liveSilenceRmsThreshold = captureState.silenceRmsThreshold;
     // Walked before the follower starts: both reset the cursor, which must not happen mid-session.
-    const scoreNotes = scoreCursor.listNotes();
-    const scoreQuarterIndex = scoreCursor.buildQuarterIndex();
+    // A throw here (an OSMD cursor crash on an unusual OMR score did exactly this) used to escape
+    // the async handler and leave the page on "Preparing score…" forever; fail visibly instead.
+    let scoreNotes: ReturnType<typeof scoreCursor.listNotes>;
+    let scoreQuarterIndex: ReturnType<typeof scoreCursor.buildQuarterIndex>;
+    try {
+      scoreNotes = scoreCursor.listNotes();
+      scoreQuarterIndex = scoreCursor.buildQuarterIndex();
+    } catch (error) {
+      console.error("Could not read the score's notes for score following", error);
+      setMatchmakerError(
+        `Couldn't read this score's notes (${error instanceof Error ? error.message : String(error)}). Try another file, or use metronome mode.`
+      );
+      matchmakerStreamRef.current = null;
+      sessionStartingRef.current = false;
+      setPracticeMode("off");
+      return;
+    }
     let offlinePathReceived = false;
 
     const scoreOffline = async (path: AlignmentPoint[]): Promise<void> => {
@@ -544,13 +566,8 @@ export default function App(): ReactElement {
         return;
       }
       const sampleRate = stream.getDiagnostics().sampleRate ?? 48_000;
-      try {
-        const records = await scoreRecordingOffline(
-          stream.getRecordedAudio(),
-          path,
-          scoreNotes,
-          scoreQuarterIndex,
-          {
+      const recordedAudio = stream.getRecordedAudio();
+      const detectorSetup = {
             sampleRate,
             gainScalar: liveGainScalar,
             silenceRmsThreshold: liveSilenceRmsThreshold,
@@ -561,15 +578,28 @@ export default function App(): ReactElement {
             lowCutHz: LIVE_CAPTURE_OPTIONS.lowCutHz ?? 80,
             highCutHz: LIVE_CAPTURE_OPTIONS.highCutHz ?? 3500,
             smoothingWindowFrames: OFFLINE_SMOOTHING_FRAMES
-          },
-          {
+          };
+      const scoringConfig = {
             inTuneCentsThreshold: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.inTuneCentsThreshold,
             minSamplesForVerdict: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.minSamplesForVerdict,
             settleMs: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.onsetSettleMs,
             plausibilityHighConfidenceThreshold: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.plausibilityHighConfidenceThreshold,
             plausibilityLowConfidenceCentsLimit: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.plausibilityLowConfidenceCentsLimit,
             plausibilityAbsoluteCentsLimit: DEFAULT_MATCHMAKER_FOLLOWER_CONFIG.plausibilityAbsoluteCentsLimit
-          },
+          };
+      lastTakeRef.current = {
+        take: { format: "tunerapp-take", version: 1, sampleRate, scoreXml: importResult.xmlData, path, notes: scoreNotes, quarterIndex: scoreQuarterIndex, detectorSetup, scoringConfig },
+        audio: recordedAudio
+      };
+      setTakeAvailable(true);
+      try {
+        const records = await scoreRecordingOffline(
+          recordedAudio,
+          path,
+          scoreNotes,
+          scoreQuarterIndex,
+          detectorSetup,
+          scoringConfig,
           (fraction) => setOfflineScoringProgress(fraction)
         );
         if (records.length > 0) {
@@ -1442,6 +1472,28 @@ export default function App(): ReactElement {
                     </p>
                   ) : null}
                   <div style={styles.buttonRow}>
+                    {takeAvailable && lastTakeRef.current ? (
+                      <button
+                        type="button"
+                        style={styles.secondaryButton}
+                        onClick={() => {
+                          const saved = lastTakeRef.current;
+                          if (!saved || !followerState) return;
+                          const follower = followerRef.current;
+                          downloadTake(
+                            {
+                              ...saved.take,
+                              savedAt: new Date().toISOString(),
+                              history: followerState.history,
+                              scoringSource: follower instanceof MatchmakerScoreFollower ? follower.getScoringSource() : null
+                            },
+                            saved.audio
+                          );
+                        }}
+                      >
+                        Download this take
+                      </button>
+                    ) : null}
                     <button type="button" style={styles.primaryButton} onClick={handleStartPracticing}>
                       Practice again
                     </button>
