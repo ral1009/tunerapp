@@ -1,5 +1,6 @@
-import { ComingNext } from '@/components/ComingNext';
+import { TunerScreen } from '@/screens/tuner/TunerScreen';
+import { useLayoutMode } from '@/theme/settings';
 
-export default function Route() {
-  return <ComingNext title="Tuner" note="The bridge-arc tuner with G D A E." />;
+export default function TunerRoute() {
+  return <TunerScreen layout={useLayoutMode()} />;
 }

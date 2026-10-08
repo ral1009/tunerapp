@@ -1,0 +1,43 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tunerapp-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:web"
+      ],
+      "port": 5173,
+      "url": "https://localhost:5173"
+    },
+    {
+      "name": "alignment-server",
+      "runtimeExecutable": "C:/Users/Ryan/Documents/GitHub/tunerapp/server/.venv312/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "main:app",
+        "--app-dir",
+        "C:/Users/Ryan/Documents/GitHub/tunerapp/server",
+        "--port",
+        "8000"
+      ],
+      "port": 8000,
+      "url": "http://localhost:8000"
+    },
+    {
+      "name": "mobile-web",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "expo",
+        "start",
+        "--web",
+        "--port",
+        "8081"
+      ],
+      "cwd": "mobile",
+      "port": 8081
+    }
+  ]
+}

@@ -1,5 +1,6 @@
-import { ComingNext } from '@/components/ComingNext';
+import { MicCheckScreen } from '@/screens/micCheck/MicCheckScreen';
+import { useLayoutMode } from '@/theme/settings';
 
-export default function Route() {
-  return <ComingNext title="Mic check" note="Play each open string; the app checks the room, the level and your tuning." />;
+export default function MicCheckRoute() {
+  return <MicCheckScreen layout={useLayoutMode()} />;
 }
