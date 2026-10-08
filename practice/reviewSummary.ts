@@ -19,7 +19,11 @@ export interface GradingOptions {
   closeCents: number;
 }
 
-export const DEFAULT_GRADING: GradingOptions = { reference: "own", inTuneCents: 15, closeCents: 30 };
+// A440 by default (2026-10-08): on a real take the open strings had drifted ~12 cents flat while
+// the fingered notes sat at concert pitch, and measuring against the open strings marked those
+// fingered notes sharp. "own" remains for strings deliberately tuned off A440; stringDrift below
+// tells the player when the two disagree.
+export const DEFAULT_GRADING: GradingOptions = { reference: "a440", inTuneCents: 15, closeCents: 30 };
 
 // How demanding the green/amber bands are. Standard is the default the app was built around.
 // Relaxed suits early beginners, for whom a 15-cent band marks most fingered notes; Strict is near
@@ -52,6 +56,10 @@ export interface GradedTake {
   // and hides the very thing they need to fix), while the open strings are set independently of
   // finger placement.
   referenceSource: "open_strings" | "all_notes" | "a440";
+  // Median of open-string notes minus median of fingered notes, in cents, when both have enough
+  // readings (else null). Large values mean the open strings and the fingers disagree -- usually
+  // strings that drifted -- which is worth telling the player regardless of the reference chosen.
+  stringDriftCents: number | null;
 }
 
 function isGraded(record: NoteAccuracyRecord): boolean {
@@ -86,7 +94,13 @@ export function gradeTake(history: readonly NoteAccuracyRecord[], options: Gradi
     const verdict: NoteVerdict = magnitude <= options.inTuneCents ? "in_tune" : magnitude <= options.closeCents ? "close" : "out_of_tune";
     return { ...record, averageCentsOff: cents, verdict };
   });
-  return { records, referenceCents, referenceSource };
+  const isOpen = (record: NoteAccuracyRecord) =>
+    OPEN_STRING_HZ.some((hz) => Math.abs(1200 * Math.log2(record.expectedFrequencyHz / hz)) < 5);
+  const openCents = graded.filter(isOpen).map((record) => record.averageCentsOff as number);
+  const fingeredCents = graded.filter((record) => !isOpen(record)).map((record) => record.averageCentsOff as number);
+  const stringDriftCents =
+    openCents.length >= MIN_OPEN_STRING_NOTES && fingeredCents.length >= 10 ? median(openCents) - median(fingeredCents) : null;
+  return { records, referenceCents, referenceSource, stringDriftCents };
 }
 
 export interface PracticeReviewSummary {
@@ -100,6 +114,7 @@ export interface PracticeReviewSummary {
   averageCentsError: number;
   referenceCents: number;
   referenceSource: GradedTake["referenceSource"];
+  stringDriftCents: number | null;
 }
 
 // Ids are NoteAccuracyRecord.stepIndex values (session-local, not ScoreDocument ids --
@@ -108,7 +123,7 @@ export function summarizePracticeSession(
   history: NoteAccuracyRecord[],
   options: GradingOptions = DEFAULT_GRADING
 ): PracticeReviewSummary {
-  const { records, referenceCents, referenceSource } = gradeTake(history, options);
+  const { records, referenceCents, referenceSource, stringDriftCents } = gradeTake(history, options);
   const ids = (verdict: NoteVerdict) => records.filter((record) => record.verdict === verdict).map((record) => String(record.stepIndex));
   // Only graded notes. Filtering on "not not_played" used to let an ungraded note with a null
   // averageCentsOff into the average as a perfect 0 cents.
@@ -123,6 +138,7 @@ export function summarizePracticeSession(
     unmeasuredNoteIds: ids("unmeasured"),
     averageCentsError,
     referenceCents,
+    stringDriftCents,
     referenceSource
   };
 }

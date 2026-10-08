@@ -1486,6 +1486,14 @@ export default function App(): ReactElement {
                       : ""}
                     .
                   </div>
+                  {sessionSummary.stringDriftCents !== null && Math.abs(sessionSummary.stringDriftCents) > 8 ? (
+                    <p style={{ ...styles.diagnosticHint, color: "#ffb020" }}>
+                      Your open strings were about {Math.abs(sessionSummary.stringDriftCents).toFixed(0)}¢{" "}
+                      {sessionSummary.stringDriftCents < 0 ? "flat" : "sharp"} of your fingered notes. They may have
+                      drifted: retune before the next take
+                      {gradeReference === "own" ? ', or grade against A440 so fingered notes aren\'t marked off because of it' : ""}.
+                    </p>
+                  ) : null}
                   <div style={styles.diagnosticHint} role="radiogroup" aria-label="Strictness">
                     Strictness:{" "}
                     {(Object.keys(STRICTNESS_BANDS) as GradeStrictness[]).map((key) => (
