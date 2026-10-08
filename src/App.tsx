@@ -22,7 +22,7 @@ import {
 } from "../practice/offlineIntonationScorer";
 import { MatchmakerStream, type MatchmakerStreamStatus } from "../audio/matchmakerStream";
 import { createBeatClock, computeTimeSignatureSegments, type BeatClock, type ClickSubdivision } from "../practice/metronome";
-import { DEFAULT_GRADING, summarizePracticeSession, type GradeReference } from "../practice/reviewSummary";
+import { DEFAULT_GRADING, STRICTNESS_BANDS, gradingOptions, summarizePracticeSession, type GradeReference, type GradeStrictness } from "../practice/reviewSummary";
 import { downloadTake, type SavedTake } from "../practice/takeExport";
 
 type ImportState = "idle" | "loading" | "success" | "error";
@@ -94,6 +94,8 @@ const OUT_OF_TUNE_HIGHLIGHT_COLOR = "#ff4d4d";
 const CLOSE_HIGHLIGHT_COLOR = "#ffb020";
 // Grey rather than the old yellow, which read as "close" next to the amber above.
 const NOT_PLAYED_HIGHLIGHT_COLOR = "#9aa0a6";
+// Purple: reached but too fast or unclear to measure (verdict "unmeasured").
+const UNCLEAR_HIGHLIGHT_COLOR = "#a07ee0";
 const OFFLINE_SCORING_TIMEOUT_MS = 15_000;
 
 function statusLabel(status: LiveCaptureState["status"]): string {
@@ -185,6 +187,23 @@ export default function App(): ReactElement {
   const [matchmakerError, setMatchmakerError] = useState<string | null>(null);
   // How the finished take is graded -- see practice/reviewSummary.ts. "own" by default.
   const [gradeReference, setGradeReference] = useState<GradeReference>(DEFAULT_GRADING.reference);
+  // Green/amber band widths (practice/reviewSummary.ts STRICTNESS_BANDS). Remembered per browser.
+  const [gradeStrictness, setGradeStrictness] = useState<GradeStrictness>(() => {
+    try {
+      const saved = localStorage.getItem("tunerapp.gradeStrictness");
+      return saved === "relaxed" || saved === "strict" ? saved : "standard";
+    } catch {
+      return "standard";
+    }
+  });
+  const chooseStrictness = (value: GradeStrictness) => {
+    setGradeStrictness(value);
+    try {
+      localStorage.setItem("tunerapp.gradeStrictness", value);
+    } catch {
+      // Storage unavailable (private window): the choice just won't persist.
+    }
+  };
   // Live counters shown in the Alignment status line while a Matchmaker session runs, polled
   // rather than pushed: the stream's chunk counter ticks ~30 times a second, and re-rendering the
   // whole app on each one is exactly the kind of main-thread load that starved the socket in an
@@ -403,14 +422,15 @@ export default function App(): ReactElement {
   useEffect(() => {
     if (!scoreCursor || !followerState) return;
     if (followerState.status !== "completed" && followerState.status !== "stopped") return;
-    const summary = summarizePracticeSession(followerState.history, { ...DEFAULT_GRADING, reference: gradeReference });
+    const summary = summarizePracticeSession(followerState.history, gradingOptions(gradeReference, gradeStrictness));
     const highlights: NoteHighlight[] = [
       ...summary.unstableNoteIds.map((id) => ({ stepIndex: Number(id), color: OUT_OF_TUNE_HIGHLIGHT_COLOR })),
       ...summary.closeNoteIds.map((id) => ({ stepIndex: Number(id), color: CLOSE_HIGHLIGHT_COLOR })),
-      ...summary.notPlayedNoteIds.map((id) => ({ stepIndex: Number(id), color: NOT_PLAYED_HIGHLIGHT_COLOR }))
+      ...summary.notPlayedNoteIds.map((id) => ({ stepIndex: Number(id), color: NOT_PLAYED_HIGHLIGHT_COLOR })),
+      ...summary.unmeasuredNoteIds.map((id) => ({ stepIndex: Number(id), color: UNCLEAR_HIGHLIGHT_COLOR }))
     ];
     scoreCursor.highlightNotes(highlights);
-  }, [scoreCursor, followerState, gradeReference]);
+  }, [scoreCursor, followerState, gradeReference, gradeStrictness]);
 
   // A Matchmaker take has ended and its post-practice alignment is on its way. However the follower
   // got here (End Practice, the server reporting the piece finished, the cursor running off the end
@@ -925,7 +945,7 @@ export default function App(): ReactElement {
   const isInTune = liveCentsFromExpected !== null && Math.abs(liveCentsFromExpected) <= DEFAULT_SCORE_FOLLOWER_CONFIG.inTuneCentsThreshold;
   const intonationLabel = liveCentsFromExpected === null ? "Listening…" : isInTune ? "In tune" : "Off pitch";
   const intonationColor = liveCentsFromExpected === null ? "#f5f7fb" : isInTune ? "#8ee8cb" : "#ff8a8a";
-  const sessionSummary = summarizePracticeSession(followerState?.history ?? [], { ...DEFAULT_GRADING, reference: gradeReference });
+  const sessionSummary = summarizePracticeSession(followerState?.history ?? [], gradingOptions(gradeReference, gradeStrictness));
   // Read on render rather than mirrored into state: every change to it coincides with a follower
   // emit, which already re-renders.
   const finalScoringSource =
@@ -1464,7 +1484,26 @@ export default function App(): ReactElement {
                           sessionSummary.referenceCents >= 0 ? "+" : ""
                         }${sessionSummary.referenceCents.toFixed(0)}¢ from A440`
                       : ""}
-                    . Green ±{DEFAULT_GRADING.inTuneCents}¢ in tune, amber up to ±{DEFAULT_GRADING.closeCents}¢ close, red out of tune.
+                    .
+                  </div>
+                  <div style={styles.diagnosticHint} role="radiogroup" aria-label="Strictness">
+                    Strictness:{" "}
+                    {(Object.keys(STRICTNESS_BANDS) as GradeStrictness[]).map((key) => (
+                      <label key={key} style={{ marginRight: 10 }}>
+                        <input
+                          type="radio"
+                          name="grade-strictness"
+                          checked={gradeStrictness === key}
+                          onChange={() => chooseStrictness(key)}
+                        />{" "}
+                        {STRICTNESS_BANDS[key].label} (±{STRICTNESS_BANDS[key].inTuneCents}¢)
+                      </label>
+                    ))}
+                    <br />
+                    <span style={{ color: "#8ee8cb" }}>Green</span> within ±{STRICTNESS_BANDS[gradeStrictness].inTuneCents}¢,{" "}
+                    <span style={{ color: "#ffb020" }}>amber</span> up to ±{STRICTNESS_BANDS[gradeStrictness].closeCents}¢,{" "}
+                    <span style={{ color: "#ff4d4d" }}>red</span> beyond, <span style={{ color: "#a07ee0" }}>purple</span> too fast or
+                    unclear to measure, <span style={{ color: "#9aa0a6" }}>grey</span> not played.
                   </div>
                   {finalScoringSource === "live" ? (
                     <p style={styles.diagnosticHint}>

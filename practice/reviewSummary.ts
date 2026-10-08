@@ -21,6 +21,22 @@ export interface GradingOptions {
 
 export const DEFAULT_GRADING: GradingOptions = { reference: "own", inTuneCents: 15, closeCents: 30 };
 
+// How demanding the green/amber bands are. Standard is the default the app was built around.
+// Relaxed suits early beginners, for whom a 15-cent band marks most fingered notes; Strict is near
+// what a trained ear notices on a held note (~5-10 cents), for advanced players.
+export type GradeStrictness = "relaxed" | "standard" | "strict";
+
+export const STRICTNESS_BANDS: Record<GradeStrictness, { label: string; inTuneCents: number; closeCents: number }> = {
+  relaxed: { label: "Relaxed", inTuneCents: 25, closeCents: 45 },
+  standard: { label: "Standard", inTuneCents: 15, closeCents: 30 },
+  strict: { label: "Strict", inTuneCents: 8, closeCents: 18 }
+};
+
+export function gradingOptions(reference: GradeReference, strictness: GradeStrictness): GradingOptions {
+  const { inTuneCents, closeCents } = STRICTNESS_BANDS[strictness];
+  return { reference, inTuneCents, closeCents };
+}
+
 // Open strings, A440 equal temperament. A note written at one of these pitches is usually played
 // as the open string, and the open strings are what the player tuned -- typically with a tuner.
 const OPEN_STRING_HZ = [196.0, 293.66, 440.0, 659.26];

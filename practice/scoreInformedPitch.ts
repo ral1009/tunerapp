@@ -48,6 +48,8 @@ const MAX_FFT_SIZE = 1 << 17;
 // practice/__tests__/offline-scorer-harness.ts): noise exceeds 3.0 in well under 1% of trials.
 export const PRESENCE_Z_THRESHOLD = 3.0;
 const OPEN_STRINGS_HZ = [196.0, 293.66, 440.0, 659.26];
+// See the level normalization in measureScoreInformedPitch.
+const REFERENCE_RMS = 0.001;
 // Set from synthetic signals only (a played note plus a louder and an equal ringing note at random
 // intervals, 50-500 ms): 0.5 keeps 98% of played notes and accepts 1.7% of pitches nobody plays.
 const DOMINANCE_THRESHOLD = 0.5;
@@ -164,6 +166,20 @@ export function measureScoreInformedPitch(
     const start = Math.floor((span.length - maxSamples) / 2);
     span = span.subarray(start, start + maxSamples);
   }
+  // Level normalization. The log compression below is not scale-invariant, so the same note gave
+  // different presence scores at different input levels: a real take recorded with the capture
+  // module's 32x software gain had 60% of clearly-played notes rejected (presence z ~2.7), and the
+  // identical audio at unity gain read them all (z ~4.3). Every span is brought to the RMS the
+  // thresholds were calibrated at (synthetic signals peaking around 0.2-0.3), so mic gain and
+  // playing volume no longer change the outcome.
+  let energy = 0;
+  for (let i = 0; i < span.length; i += 1) energy += span[i] * span[i];
+  const rms = Math.sqrt(energy / span.length);
+  if (rms <= 0) return null;
+  const normalized = new Float32Array(span.length);
+  const scale = REFERENCE_RMS / rms;
+  for (let i = 0; i < span.length; i += 1) normalized[i] = span[i] * scale;
+  span = normalized;
   // Zero-pad to ~4x for a smooth spectrum to interpolate on.
   const fftSize = Math.min(MAX_FFT_SIZE, nextPowerOfTwo(span.length * 4));
   const spectrum = logMagnitudeSpectrum(span, fftSize);
