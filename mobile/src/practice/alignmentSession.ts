@@ -21,6 +21,8 @@ export interface SessionCallbacks {
   onStatus: (status: SessionStatus) => void;
   onPosition: (quarter: number) => void;
   onOfflinePath: (path: AlignmentPoint[]) => void;
+  // Each chunk actually sent (and kept for grading), as it's sent.
+  onRecorded?: (chunk: Float32Array) => void;
   onClosed: () => void;
   onError: (message: string) => void;
 }
@@ -171,6 +173,7 @@ export class AlignmentSession {
     this.socket.send(chunk.buffer as ArrayBuffer);
     this.recorded.push(chunk);
     this.chunksSent += 1;
+    this.callbacks.onRecorded?.(chunk);
   }
 
   seek(quarter: number): boolean {

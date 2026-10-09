@@ -17,6 +17,7 @@ import { useMic } from '@/audio/useMic';
 import type { MicStatus } from '@/audio/micTypes';
 
 import { AlignmentSession, type SessionStatus } from './alignmentSession';
+import { inProcessGrader, type Grader, type TakeUpload } from './engineGrader';
 
 // Matches DEFAULT_MATCHMAKER_FOLLOWER_CONFIG and the web app's post-take scoring config, so a take
 // on the phone is graded exactly like one in the browser.
@@ -54,6 +55,8 @@ export interface PracticeOptions {
   strictness: GradeStrictness;
   moveCursor: (quarter: number) => void;
   onTake: (result: PracticeResult) => void; // each graded take (each pass, when looping)
+  // Where post-take grading runs (the score engine's page, see engineGrader.ts); in-process if absent.
+  grader?: Grader;
 }
 
 function stepIndexAt(index: QuarterIndexEntry[], quarter: number): number | null {
@@ -87,6 +90,7 @@ export function usePractice(options: PracticeOptions) {
   const passCountRef = useRef(0);
   const beginTakeRef = useRef<() => void>(() => undefined);
   const noiseFloorRef = useRef<number | undefined>(undefined);
+  const uploadRef = useRef<TakeUpload | null>(null);
   useEffect(() => {
     optionsRef.current = options;
   });
@@ -112,25 +116,28 @@ export function usePractice(options: PracticeOptions) {
     }
     const sampleRate = session.rate;
     const { silenceRmsThreshold, gainScalar } = session.levels();
-    const records = await scoreRecordingOffline(
-      session.recordedAudio(),
-      path,
-      o.notes,
-      o.quarterIndex,
-      {
-        sampleRate,
-        gainScalar,
-        silenceRmsThreshold,
-        frameSize: analysisFrameSizeFor(sampleRate, 2048),
-        hopSize: Math.round(sampleRate * OFFLINE_ANALYSIS_INTERVAL_SECONDS),
-        confidenceThreshold: 0.67,
-        lowCutHz: 80,
-        highCutHz: 3500,
-        smoothingWindowFrames: OFFLINE_SMOOTHING_FRAMES,
-      },
-      SCORING_CONFIG,
-      (f) => setProgress(f),
-    );
+    const setup = {
+      sampleRate,
+      gainScalar,
+      silenceRmsThreshold,
+      frameSize: analysisFrameSizeFor(sampleRate, 2048),
+      hopSize: Math.round(sampleRate * OFFLINE_ANALYSIS_INTERVAL_SECONDS),
+      confidenceThreshold: 0.67,
+      lowCutHz: 80,
+      highCutHz: 3500,
+      smoothingWindowFrames: OFFLINE_SMOOTHING_FRAMES,
+    };
+    let records: NoteAccuracyRecord[];
+    try {
+      const upload = uploadRef.current;
+      records = upload
+        ? await upload.grade({ path, notes: o.notes, quarterIndex: o.quarterIndex, setup, config: SCORING_CONFIG, onProgress: (f) => setProgress(f) })
+        : await scoreRecordingOffline(session.recordedAudio(), path, o.notes, o.quarterIndex, setup, SCORING_CONFIG, (f) => setProgress(f));
+    } catch (e) {
+      setError(`The take couldn’t be graded: ${e instanceof Error ? e.message : String(e)}`);
+      setPhase('error');
+      return;
+    }
     o.onTake({ records, source: 'offline', region: o.region });
     const spot = resolvedRegion();
     if (spot) {
@@ -153,7 +160,10 @@ export function usePractice(options: PracticeOptions) {
     const previous = sessionRef.current;
     if (previous?.noiseFloorRms !== undefined) noiseFloorRef.current = previous.noiseFloorRms;
     previous?.stop();
+    const upload = (optionsRef.current.grader ?? inProcessGrader).startTake();
+    uploadRef.current = upload;
     const session = new AlignmentSession({
+      onRecorded: (chunk) => upload.append(chunk),
       onStatus: (status) => {
         setSessionStatus(status);
         if (status === 'streaming') setPhase('playing');
@@ -224,7 +234,7 @@ export function usePractice(options: PracticeOptions) {
 
   // Live note for the readout, from the same microphone.
   useEffect(() => {
-    tunerRef.current = new LiveTuner((reading) => setLiveHz(reading.frequencyHz), 2048);
+    tunerRef.current = new LiveTuner((reading) => setLiveHz(reading.frequencyHz));
     return () => {
       tunerRef.current = null;
     };

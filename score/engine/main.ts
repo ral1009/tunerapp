@@ -9,6 +9,7 @@
 import { applyNoteCorrectionsToXml } from "../correctionUI/noteXmlCorrection";
 import { importMusicXmlToScore } from "../musicxmlImport";
 import { renderScore, type RenderedScoreHandle } from "../renderer";
+import { scoreRecordingOffline } from "../../practice/offlineIntonationScorer";
 import type { EngineCommand, EngineEvent, ScoreTheme } from "./protocol";
 
 declare global {
@@ -84,9 +85,55 @@ host.addEventListener("click", (event) => {
   if (hit) send({ type: "barTap", measureIndex: hit.measureIndex });
 });
 
+// Takes being handed over for grading, by id: their audio so far, piece by piece.
+const takes = new Map<string, Float32Array[]>();
+
+function decodePcm16(base64: string): Float32Array {
+  const binary = atob(base64);
+  const out = new Float32Array(binary.length >> 1);
+  for (let i = 0; i < out.length; i += 1) {
+    let v = binary.charCodeAt(2 * i) | (binary.charCodeAt(2 * i + 1) << 8);
+    if (v >= 0x8000) v -= 0x10000;
+    out[i] = v / 32768;
+  }
+  return out;
+}
+
+async function grade(command: Extract<EngineCommand, { type: "grade" }>): Promise<void> {
+  const pieces = takes.get(command.id) ?? [];
+  takes.delete(command.id);
+  const audio = new Float32Array(pieces.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const piece of pieces) {
+    audio.set(piece, at);
+    at += piece.length;
+  }
+  try {
+    let lastSent = -1;
+    const records = await scoreRecordingOffline(audio, command.path, command.notes, command.quarterIndex, command.setup, command.config, (fraction) => {
+      if (fraction - lastSent >= 0.05 || fraction === 1) {
+        lastSent = fraction;
+        send({ type: "gradeProgress", id: command.id, fraction });
+      }
+    });
+    send({ type: "graded", id: command.id, records });
+  } catch (error) {
+    send({ type: "gradeFailed", id: command.id, message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 async function receive(command: EngineCommand): Promise<void> {
   try {
     switch (command.type) {
+      case "gradeAudio": {
+        const pieces = takes.get(command.id) ?? [];
+        pieces.push(decodePcm16(command.pcm16));
+        takes.set(command.id, pieces);
+        return;
+      }
+      case "grade":
+        await grade(command);
+        return;
       case "load": {
         currentXml = command.xml;
         applyTheme(command.theme);

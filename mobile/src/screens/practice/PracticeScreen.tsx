@@ -10,6 +10,7 @@ import { BackLink, Display, Eyebrow, GoldButton, IntonationScale, paperSheet, Pr
 import { useLibrary } from '@/data/libraryStore';
 import { useTakes } from '@/data/takesStore';
 import { highlightsFor } from '@/practice/grading';
+import { createEngineGrader } from '@/practice/engineGrader';
 import { usePractice, type PracticeResult } from '@/practice/usePractice';
 import { ScoreView, type ScoreViewHandle } from '@/score/ScoreView';
 import { useScoreTheme, useSettings, type LayoutMode } from '@/theme/settings';
@@ -32,6 +33,12 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
   const [jumpInput, setJumpInput] = useState('');
   const [jumpMessage, setJumpMessage] = useState<string | null>(null);
   const region = fromBar && toBar ? { fromBar: Math.min(fromBar, toBar), toBar: Math.max(fromBar, toBar) } : null;
+
+  // Grading runs in the score engine's page (its own thread, with a JIT), not on the app's thread.
+  const [grader] = useState(createEngineGrader);
+  useEffect(() => {
+    grader.attach((command) => score.current?.send(command));
+  }, [grader]);
 
   const moveCursor = useCallback((quarter: number) => {
     score.current?.send({ type: 'cursor', action: 'show' });
@@ -58,6 +65,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
     strictness: settings.strictness,
     moveCursor,
     onTake,
+    grader: grader.grader,
   });
 
   // A whole-piece take goes straight to its review.
@@ -81,6 +89,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
   }
 
   const onEngine = (event: EngineEvent) => {
+    if (grader.handle(event)) return;
     if (event.type === 'loaded' && event.rendered) {
       setNotes(event.notes);
       setQuarterIndex(event.quarterIndex);
