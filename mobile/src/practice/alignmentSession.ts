@@ -33,6 +33,24 @@ const CALIBRATION_GAIN_TARGET_RMS = 0.05;
 const CALIBRATION_GAIN_EPSILON_RMS = 0.0005;
 const MAX_GAIN_SCALAR = 32;
 
+// The server only uses the hash as a cache key for its prepared reference. expo-crypto's web build
+// needs crypto.subtle, which a plain-http page (the web build opened by LAN address) doesn't have,
+// so fall back to a simple string hash there rather than never connecting.
+async function hashScore(text: string): Promise<string> {
+  try {
+    return await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, text);
+  } catch {
+    let a = 0x811c9dc5;
+    let b = 0x01000193;
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text.charCodeAt(i);
+      a = Math.imul(a ^ c, 0x01000193) >>> 0;
+      b = Math.imul(b + c, 0x85ebca6b) >>> 0;
+    }
+    return `fnv-${a.toString(16)}${b.toString(16)}-${text.length}`;
+  }
+}
+
 function rms(samples: Float32Array): number {
   let sum = 0;
   for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
@@ -80,7 +98,7 @@ export class AlignmentSession {
   // Opens the socket and waits for the server to prepare the score (seconds the first time).
   async connect(scoreXml: string, sampleRate: number): Promise<{ hopLength: number; totalQuarters: number }> {
     this.sampleRate = sampleRate;
-    const scoreHash = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, scoreXml);
+    const scoreHash = await hashScore(scoreXml);
     const socket = new WebSocket(`${serverUrl().replace(/^http/, 'ws')}/ws/align`);
     socket.binaryType = 'arraybuffer';
     this.socket = socket;

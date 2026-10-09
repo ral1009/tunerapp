@@ -1,10 +1,11 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { View, type StyleProp, type ViewStyle } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import type { EngineCommand, EngineEvent, ScoreTheme } from '@core/score/engine/protocol';
 
 import { SCORE_ENGINE_HTML } from './engineHtml.generated';
+import { ScoreError } from './ScoreError';
 
 export interface ScoreViewHandle {
   send: (command: EngineCommand) => void;
@@ -25,6 +26,7 @@ export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function Sc
   const webview = useRef<WebView>(null);
   const ready = useRef(false);
   const queue = useRef<EngineCommand[]>([]);
+  const [failure, setFailure] = useState<string | null>(null);
   const onEventRef = useRef(onEvent);
   useEffect(() => {
     onEventRef.current = onEvent;
@@ -64,6 +66,8 @@ export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function Sc
         const lastLoad = [...pending].reverse().find((c) => c.type === 'load');
         pending.filter((c) => c.type !== 'load' || c === lastLoad).forEach(send);
       }
+      if (parsed.type === 'error') setFailure(parsed.message);
+      else if (parsed.type === 'loaded') setFailure(null);
       onEventRef.current?.(parsed);
     },
     [send],
@@ -81,6 +85,7 @@ export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function Sc
         bounces={false}
         javaScriptEnabled
       />
+      {failure && render ? <ScoreError message={failure} /> : null}
     </View>
   );
 });

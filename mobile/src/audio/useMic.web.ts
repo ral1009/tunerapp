@@ -45,6 +45,13 @@ export function useMic(onChunk: (chunk: MicChunk) => void): MicHandle {
     if (nodes.current) return;
     setError(null);
     setStatus('requesting');
+    // Browsers only offer the microphone on secure pages: https, or localhost. Opened by LAN
+    // address over plain http, navigator.mediaDevices is missing entirely.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('The browser only allows the microphone on a secure page — open the app at localhost, or use the phone app.');
+      setStatus('error');
+      return;
+    }
     try {
       const media = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },

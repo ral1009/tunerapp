@@ -296,6 +296,7 @@ export function usePractice(options: PracticeOptions) {
     phase,
     sessionStatus,
     micStatus: mic.status as MicStatus,
+    micError: mic.error,
     currentStep,
     liveHz,
     error,

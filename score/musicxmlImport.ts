@@ -1,6 +1,16 @@
 import type { ScoreDocument, ScoreMeasure, ScoreMeasureIssue, ScoreNote } from "./schema";
 import { inferTimeSignature } from "./timeSignatureInference";
 
+// A fresh id per imported note. crypto.randomUUID() exists only in secure contexts: fine on
+// https/localhost, but undefined in the app's score WebView (an inline HTML page) and on a plain-
+// http LAN address -- where calling it threw on the first note and the score never loaded.
+let noteIdCounter = 0;
+function newNoteId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  noteIdCounter += 1;
+  return `note-${Date.now().toString(36)}-${noteIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 const MAJOR_KEY_BY_FIFTHS: Record<number, string> = {
   [-7]: "Cb",
   [-6]: "Gb",
@@ -328,7 +338,7 @@ export async function importMusicXmlToScore(xml: string, options: MusicXmlImport
           const fingeringText = child.querySelector("notations > technical > fingering")?.textContent;
 
           notes.push({
-            id: crypto.randomUUID(),
+            id: newNoteId(),
             pitch: pitchToNoteName(step, alter, octave),
             startBeat,
             durationBeats,
