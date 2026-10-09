@@ -21,6 +21,7 @@ import { probeChunk, probeSection, startProbe } from './perfProbe';
 import { serverUrl } from '@/config/server';
 
 import type { Grader } from './engineGrader';
+import { createLiveValue } from './liveValue';
 
 // Matches DEFAULT_MATCHMAKER_FOLLOWER_CONFIG and the web app's post-take scoring config, so a take
 // on the phone is graded exactly like one in the browser.
@@ -79,7 +80,8 @@ export function usePractice(options: PracticeOptions) {
   const [phase, setPhase] = useState<PracticePhase>('loading');
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('connecting');
   const [currentStep, setCurrentStep] = useState<number | null>(null);
-  const [liveHz, setLiveHz] = useState<number | null>(null);
+  // The live pitch lives outside React state: only the readout re-renders on each reading.
+  const [liveHz] = useState(() => createLiveValue<number | null>(null));
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [passes, setPasses] = useState<SpotPassResult[]>([]);
@@ -237,11 +239,11 @@ export function usePractice(options: PracticeOptions) {
 
   // Live note for the readout, from the same microphone.
   useEffect(() => {
-    tunerRef.current = new LiveTuner((reading) => setLiveHz(reading.frequencyHz), LIVE_READOUT_INTERVAL_MS);
+    tunerRef.current = new LiveTuner((reading) => liveHz.set(reading.frequencyHz), LIVE_READOUT_INTERVAL_MS);
     return () => {
       tunerRef.current = null;
     };
-  }, []);
+  }, [liveHz]);
 
   // Start once the score engine has given us the notes.
   const started = useRef(false);

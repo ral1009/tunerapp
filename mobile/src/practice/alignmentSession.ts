@@ -62,7 +62,9 @@ export class AlignmentSession {
   private socket: WebSocket | null = null;
   private hop = 0;
   private sampleRate = 0;
+  // The chunk being filled: exactly one hop long, sent and replaced each time it fills.
   private pending = new Float32Array(0);
+  private pendingFill = 0;
   private recorded: Float32Array[] = [];
   private calibration: number[] = [];
   private calibrationSamples = 0;
@@ -139,15 +141,24 @@ export class AlignmentSession {
   // Microphone audio in, any chunk size: re-cut into exact hop-sized chunks, gated, sent.
   push(samples: Float32Array): void {
     if (!this.socket || this.hop === 0 || this.stopped || this.status === 'finishing') return;
-    const merged = new Float32Array(this.pending.length + samples.length);
-    merged.set(this.pending);
-    merged.set(samples, this.pending.length);
-    let offset = 0;
-    while (merged.length - offset >= this.hop) {
-      this.sendChunk(merged.slice(offset, offset + this.hop));
-      offset += this.hop;
+    // Fill fixed hop-sized chunks in place; no merged copy of everything per callback.
+    if (this.pending.length !== this.hop) {
+      this.pending = new Float32Array(this.hop);
+      this.pendingFill = 0;
     }
-    this.pending = merged.slice(offset);
+    let offset = 0;
+    while (offset < samples.length) {
+      const take = Math.min(this.hop - this.pendingFill, samples.length - offset);
+      this.pending.set(samples.subarray(offset, offset + take), this.pendingFill);
+      this.pendingFill += take;
+      offset += take;
+      if (this.pendingFill === this.hop) {
+        const chunk = this.pending;
+        this.pending = new Float32Array(this.hop);
+        this.pendingFill = 0;
+        this.sendChunk(chunk);
+      }
+    }
   }
 
   private sendChunk(chunk: Float32Array): void {

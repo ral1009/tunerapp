@@ -11,6 +11,7 @@ import { useLibrary } from '@/data/libraryStore';
 import { useTakes } from '@/data/takesStore';
 import { highlightsFor } from '@/practice/grading';
 import { createEngineGrader } from '@/practice/engineGrader';
+import { useLiveValue, type LiveValue } from '@/practice/liveValue';
 import { probeRender } from '@/practice/perfProbe';
 import { usePractice, type PracticeResult } from '@/practice/usePractice';
 import { ScoreView, type ScoreViewHandle } from '@/score/ScoreView';
@@ -100,7 +101,6 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
   };
 
   const bar = practice.currentStep !== null && notes ? (notes[practice.currentStep]?.measureIndex ?? 0) + 1 : null;
-  const note = practice.liveHz ? nearestNote(practice.liveHz, settings.referencePitchHz) : null;
   const statusLine =
     practice.phase === 'error'
       ? practice.error ?? 'Something went wrong'
@@ -140,8 +140,6 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
   const passes = practice.passes;
   const lastPass = passes[passes.length - 1];
   const passNumber = passes.length + (practice.phase === 'scoring' ? 0 : 1);
-  const caption = statusLine ?? (note ? firstPosition(note.midi) : 'Listening');
-  const cents = note ? Math.round(note.cents) : null;
 
   const finishButton =
     practice.phase === 'error' ? (
@@ -174,15 +172,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
     <TextButton label="Jump to bar" onPress={() => setJumping(true)} />
   );
 
-  const readout = (
-    <View style={styles.readout}>
-      <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 14, flex: 1, minWidth: 0 }}>
-        {note ? <Display size={tablet ? 88 : 64} style={{ lineHeight: tablet ? 90 : 66 }}>{note.name}</Display> : null}
-        <Text style={[styles.caption, statusLine ? styles.captionStatus : null]} numberOfLines={2}>{caption}</Text>
-      </View>
-      {cents !== null ? <Text style={styles.cents}>{cents >= 0 ? '+' : '−'}{Math.abs(cents)}¢</Text> : null}
-    </View>
-  );
+  const readout = <LiveReadout liveHz={practice.liveHz} a4={settings.referencePitchHz} statusLine={statusLine} tablet={tablet} />;
 
   const loopLine = region ? (
     <View style={styles.loopLine}>
@@ -208,7 +198,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
             {readout}
           </View>
           <View style={{ width: 440 }}>
-            <IntonationScale cents={cents} />
+            <LiveScale liveHz={practice.liveHz} a4={settings.referencePitchHz} />
           </View>
           <View style={styles.controls}>
             {jumpControl}
@@ -219,7 +209,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
         <View style={{ paddingHorizontal: g, paddingTop: 18, paddingBottom: 26, gap: 14 }}>
           {loopLine}
           {readout}
-          <IntonationScale cents={cents} />
+          <LiveScale liveHz={practice.liveHz} a4={settings.referencePitchHz} />
           <View style={[styles.controls, { justifyContent: 'space-between' }]}>
             {jumpControl}
             {finishButton}
@@ -260,6 +250,29 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
       </View>
     </Screen>
   );
+}
+
+// The live note and its cents: subscribed to the live pitch on their own, so a reading redraws
+// these few views and not the whole screen.
+function LiveReadout({ liveHz, a4, statusLine, tablet }: { liveHz: LiveValue<number | null>; a4: number; statusLine: string | null; tablet: boolean }) {
+  const hz = useLiveValue(liveHz);
+  const note = hz ? nearestNote(hz, a4) : null;
+  const caption = statusLine ?? (note ? firstPosition(note.midi) : 'Listening');
+  const cents = note ? Math.round(note.cents) : null;
+  return (
+    <View style={styles.readout}>
+      <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 14, flex: 1, minWidth: 0 }}>
+        {note ? <Display size={tablet ? 88 : 64} style={{ lineHeight: tablet ? 90 : 66 }}>{note.name}</Display> : null}
+        <Text style={[styles.caption, statusLine ? styles.captionStatus : null]} numberOfLines={2}>{caption}</Text>
+      </View>
+      {cents !== null ? <Text style={styles.cents}>{cents >= 0 ? '+' : '−'}{Math.abs(cents)}¢</Text> : null}
+    </View>
+  );
+}
+
+function LiveScale({ liveHz, a4 }: { liveHz: LiveValue<number | null>; a4: number }) {
+  const hz = useLiveValue(liveHz);
+  return <IntonationScale cents={hz ? Math.round(nearestNote(hz, a4).cents) : null} />;
 }
 
 const styles = StyleSheet.create({
