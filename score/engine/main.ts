@@ -18,9 +18,10 @@ declare global {
   }
 }
 
-const THEMES: Record<ScoreTheme, { page: string; ink: string; select: string; selectRule: string }> = {
-  paper: { page: "#FAF7F0", ink: "#14110E", select: "rgba(186,140,62,0.14)", selectRule: "rgba(154,111,44,0.9)" },
-  ebony: { page: "#0C0907", ink: "#EFE5D1", select: "rgba(201,164,106,0.10)", selectRule: "rgba(201,164,106,0.9)" }
+// The page matches the app's ivory sheet / ebony ground; the cursor is gold rather than OSMD's green.
+const THEMES: Record<ScoreTheme, { page: string; ink: string; select: string; selectRule: string; cursor: string }> = {
+  paper: { page: "#FAF6EC", ink: "#14110E", select: "rgba(186,140,62,0.14)", selectRule: "rgba(154,111,44,0.9)", cursor: "#C9963F" },
+  ebony: { page: "#0B0806", ink: "#EFE5D1", select: "rgba(201,164,106,0.10)", selectRule: "rgba(201,164,106,0.9)", cursor: "#E3C58F" }
 };
 
 function send(event: EngineEvent): void {
@@ -107,7 +108,10 @@ async function receive(command: EngineCommand): Promise<void> {
         return;
       case "cursor":
         if (!handle) return;
-        if (command.action === "show") handle.cursor.show();
+        if (command.action === "show") {
+          handle.cursor.setHighlightColor(THEMES[currentTheme].cursor);
+          handle.cursor.show();
+        }
         else if (command.action === "hide") handle.cursor.hide();
         else handle.cursor.reset();
         return;

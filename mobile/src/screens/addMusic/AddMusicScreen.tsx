@@ -2,9 +2,10 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { Body, Display, Eyebrow, Rule, Screen, Serif, TextButton, useGutter } from '@/components/ui';
+import { Arrow, BackLink, Body, Display, Eyebrow, Purfling, Screen, Serif, useGutter, Wood } from '@/components/ui';
+import { useLibrary } from '@/data/libraryStore';
 import { setPendingUpload } from '@/data/pendingUpload';
 import type { LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
@@ -15,6 +16,7 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
   const tablet = layout === 'tablet';
   const g = useGutter(layout);
   const [message, setMessage] = useState<string | null>(null);
+  const library = useLibrary();
 
   const sendPhoto = (asset: ImagePicker.ImagePickerAsset) => {
     setPendingUpload({
@@ -62,70 +64,88 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
     router.push('/reading');
   };
 
-  const options = [
-    { title: 'Take a photo', hint: 'Lay the page flat in good light and fit the whole page in the frame.', onPress: takePhoto },
-    { title: 'Choose a photo', hint: 'A picture of the page you already have.', onPress: choosePhoto },
-    { title: 'Choose a file', hint: 'A MusicXML file exported from notation software or a digital part.', onPress: chooseFile },
-  ];
+  const starters = library.pieces.filter((p) => p.source === 'sample');
 
-  const illustration = (
-    <View style={[styles.frame, tablet ? { width: 300, height: 400 } : { width: 220, height: 290 }]} accessibilityElementsHidden>
-      <View style={[styles.page, { transform: [{ rotate: '-2.5deg' }] }]}>
-        <Text style={styles.pageCaps}>A PAGE OF MUSIC</Text>
-        {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-          <View key={i} style={{ gap: 3, marginHorizontal: 16, marginTop: i === 0 ? 14 : 14 }}>
-            {[0, 1, 2, 3, 4].map((k) => (
-              <View key={k} style={{ height: 1, backgroundColor: 'rgba(20,17,14,0.55)' }} />
-            ))}
-          </View>
-        ))}
+  const photoPanel = (
+    <Pressable onPress={takePhoto} accessibilityRole="button" accessibilityLabel="Photograph a page" style={[styles.photo, tablet && { height: 420 }]}>
+      <Wood variant="hero" style={StyleSheet.absoluteFill} />
+      <Purfling />
+      <View style={styles.camera} accessibilityElementsHidden>
+        <View style={styles.cameraBody} />
+        <View style={styles.cameraLens} />
+        <View style={styles.cameraHump} />
       </View>
-      {(['tl', 'tr', 'bl', 'br'] as const).map((c) => (
-        <View key={c} style={[styles.corner, c.includes('t') ? { top: 0, borderTopWidth: 2 } : { bottom: 0, borderBottomWidth: 2 }, c.includes('l') ? { left: 0, borderLeftWidth: 2 } : { right: 0, borderRightWidth: 2 }]} />
-      ))}
-    </View>
+      <View style={styles.photoText}>
+        <Eyebrow tone="bright">Photograph a page</Eyebrow>
+        <Display size={tablet ? 34 : 26} style={{ lineHeight: tablet ? 38 : 30 }}>The part on your music stand</Display>
+        <Text style={styles.photoBody}>We read the notes from the photo in about half a minute. Anything we misread, you can fix.</Text>
+      </View>
+    </Pressable>
   );
 
-  const list = (
-    <View style={{ flex: 1, minWidth: 280 }}>
-      {options.map((o) => (
-        <Pressable key={o.title} onPress={o.onPress} accessibilityRole="button" style={styles.option}>
-          <View style={{ flex: 1, gap: 4 }}>
-            <Serif size={20}>{o.title}</Serif>
-            <Text style={styles.hint}>{o.hint}</Text>
-          </View>
-          <Text style={styles.arrow}>→</Text>
-        </Pressable>
-      ))}
+  const others = (
+    <View style={{ gap: 0 }}>
+      <Pressable onPress={choosePhoto} accessibilityRole="button" style={styles.option}>
+        <View style={{ flex: 1, gap: 6 }}>
+          <Serif size={20}>Choose a photo</Serif>
+          <Text style={styles.hint}>A picture of the page you already have.</Text>
+        </View>
+        <Arrow />
+      </Pressable>
+      <Pressable onPress={chooseFile} accessibilityRole="button" style={styles.option}>
+        <View style={{ flex: 1, gap: 6 }}>
+          <Serif size={20}>Choose a MusicXML file</Serif>
+          <Text style={styles.hint}>Exported from MuseScore, Finale or Sibelius, or downloaded from IMSLP.</Text>
+        </View>
+        <Arrow />
+      </Pressable>
       {message ? <Body style={{ color: colors.close, marginTop: 16 }}>{message}</Body> : null}
-      <Text style={[styles.hint, { marginTop: 20 }]}>Reading a photo takes about half a minute. Printed parts read best; handwriting doesn&rsquo;t read yet.</Text>
+      {starters.length ? (
+        <View style={{ marginTop: 34 }}>
+          <Eyebrow tone="muted">Or start with</Eyebrow>
+          <View style={{ marginTop: 10 }}>
+            {starters.map((p) => (
+              <Pressable key={p.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/piece/[id]', params: { id: p.id } })} style={styles.starter}>
+                <View style={{ flex: 1, gap: 3 }}>
+                  <Serif size={18}>{p.title}</Serif>
+                  <Text style={styles.hint}>{p.measureCount} bars · {p.composer}</Text>
+                </View>
+                <Text style={styles.open}>Open</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 
   return (
     <Screen layout={layout}>
-      <View style={{ flex: 1, paddingHorizontal: g, paddingTop: tablet ? 40 : 24 }}>
-        <TextButton label="← Back" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
-        <Eyebrow style={{ marginTop: 8 }}>Add music</Eyebrow>
-        <Display size={tablet ? 56 : 36} style={{ marginTop: 10 }}>A new piece</Display>
-        {tablet ? <Rule style={{ marginTop: 28 }} /> : null}
-        <View style={[styles.body, tablet && styles.bodyTablet]}>
-          <View style={{ alignItems: 'center', paddingVertical: tablet ? 0 : 24 }}>{illustration}</View>
-          {list}
+      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+        <View style={{ paddingLeft: g - 10, paddingTop: 6 }}>
+          <BackLink label="Library" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
         </View>
-      </View>
+        <Display size={tablet ? 64 : 44} style={{ paddingHorizontal: g, marginTop: 18 }}>Add music</Display>
+        <View style={[{ paddingHorizontal: tablet ? g : 16, marginTop: 26 }, tablet && styles.bodyTablet]}>
+          <View style={tablet ? { flex: 1.1 } : null}>{photoPanel}</View>
+          <View style={[tablet ? { flex: 1 } : { paddingHorizontal: 12, marginTop: 10 }]}>{others}</View>
+        </View>
+      </ScrollView>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  body: { flex: 1 },
-  bodyTablet: { flexDirection: 'row', alignItems: 'center', gap: 80, paddingBottom: 40 },
-  frame: { alignItems: 'center', justifyContent: 'center' },
-  page: { width: '82%', height: '86%', backgroundColor: '#F3EEE3', shadowColor: '#000', shadowOpacity: 0.55, shadowRadius: 16, shadowOffset: { width: 0, height: 12 }, elevation: 8 },
-  pageCaps: { marginTop: 12, textAlign: 'center', fontFamily: fonts.serif, fontSize: 10, letterSpacing: 1, color: '#2A211B' },
-  corner: { position: 'absolute', width: 26, height: 26, borderColor: colors.goldBright },
+  bodyTablet: { flexDirection: 'row', gap: 64, alignItems: 'flex-start' },
+  photo: { height: 270, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.6, shadowRadius: 30, shadowOffset: { width: 0, height: 20 } },
+  photoText: { position: 'absolute', left: 22, right: 22, bottom: 22, gap: 8 },
+  photoBody: { fontFamily: fonts.sansLight, fontSize: 13, lineHeight: 20, color: colors.cream },
+  camera: { position: 'absolute', left: 22, top: 30, width: 34, height: 26 },
+  cameraBody: { position: 'absolute', left: 0, right: 0, top: 5, bottom: 0, borderWidth: 1.2, borderColor: colors.bright },
+  cameraLens: { position: 'absolute', left: 11, top: 9, width: 12, height: 12, borderRadius: 6, borderWidth: 1.2, borderColor: colors.bright },
+  cameraHump: { position: 'absolute', left: 10, top: 0, width: 14, height: 5, borderWidth: 1.2, borderBottomWidth: 0, borderColor: colors.bright },
   option: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 20, borderBottomWidth: 1, borderBottomColor: colors.ruleSoft, minHeight: 64 },
-  hint: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 20, color: colors.muted },
-  arrow: { fontFamily: fonts.sans, fontSize: 18, color: colors.gold },
+  starter: { minHeight: 64, flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: 1, borderTopColor: colors.ruleSoft },
+  hint: { fontFamily: fonts.sansLight, fontSize: 12, lineHeight: 18, color: colors.muted },
+  open: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 3, textTransform: 'uppercase', color: colors.gold },
 });

@@ -2,6 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useWindowDimensions } from 'react-native';
 
+import type { WoodKey } from './woods';
+
 // Player settings, saved on the device. The grading options mirror practice/reviewSummary.ts in
 // the web app (reference, strictness); layout and score theme are new for the native app.
 export type LayoutPreference = 'auto' | 'phone' | 'tablet';
@@ -15,6 +17,7 @@ export interface Settings {
   reference: GradeReference;
   strictness: Strictness;
   referencePitchHz: 440 | 442 | 443;
+  wood: WoodKey;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -23,6 +26,7 @@ export const DEFAULT_SETTINGS: Settings = {
   reference: 'a440',
   strictness: 'standard',
   referencePitchHz: 440,
+  wood: 'maple',
 };
 
 const STORAGE_KEY = 'tunerapp.settings.v1';

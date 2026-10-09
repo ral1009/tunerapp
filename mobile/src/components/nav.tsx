@@ -2,62 +2,61 @@ import { Link, type Href } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useLibrary } from '@/data/libraryStore';
 import { colors, fonts } from '@/theme/tokens';
 
-type Section = 'library' | 'tuner' | 'settings';
-const ITEMS: { key: Section; label: string; href: Href }[] = [
-  { key: 'library', label: 'Library', href: '/' },
-  { key: 'tuner', label: 'Tuner', href: '/tuner' },
-  { key: 'settings', label: 'Settings', href: '/settings' },
-];
+type Section = 'library' | 'practise' | 'tuner' | 'settings';
 
-// Phone: a bar along the bottom. iPad: the same three as tracked caps in the header.
+// Phone: four words along the bottom, a gold hairline over the current one. iPad: the same four
+// as tracked caps in the header, underlined.
 export function NavBar({ current, layout }: { current: Section; layout: 'phone' | 'tablet' }) {
   const insets = useSafeAreaInsets();
+  const library = useLibrary();
+  const items: { key: Section; label: string; href: Href }[] = [
+    { key: 'library', label: 'Library', href: '/' },
+    // "Practise" picks up the piece you were last in; with an empty library it adds music.
+    { key: 'practise', label: 'Practise', href: library.current ? { pathname: '/practice', params: { id: library.current.id } } : '/add-music' },
+    { key: 'tuner', label: 'Tuner', href: '/tuner' },
+    { key: 'settings', label: 'Settings', href: '/settings' },
+  ];
   if (layout === 'tablet') {
     return (
       <View style={styles.tabletRow}>
-        {ITEMS.map((item) => (
-          <NavItem key={item.key} item={item} on={item.key === current} underline />
-        ))}
-        <Link href="/add-music" asChild>
-          <Pressable accessibilityRole="button" style={styles.addButton}>
-            <Text style={styles.addText}>+ Add music</Text>
-          </Pressable>
-        </Link>
+        {items.map((item) => {
+          const on = item.key === current;
+          return (
+            <Link key={item.key} href={item.href} asChild replace={item.key !== 'practise'}>
+              <Pressable accessibilityRole="link" accessibilityState={{ selected: on }} style={StyleSheet.flatten([styles.tabletItem, { borderBottomColor: on ? colors.goldBright : 'transparent' }])}>
+                <Text style={[styles.itemText, { color: on ? colors.ivory : colors.faintText }]}>{item.label}</Text>
+              </Pressable>
+            </Link>
+          );
+        })}
       </View>
     );
   }
   return (
-    <View style={[styles.phoneBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-      {ITEMS.map((item) => (
-        <NavItem key={item.key} item={item} on={item.key === current} />
-      ))}
+    <View style={[styles.phoneBar, { paddingBottom: Math.max(insets.bottom, 18) }]}>
+      {items.map((item) => {
+        const on = item.key === current;
+        return (
+          <Link key={item.key} href={item.href} asChild replace={item.key !== 'practise'}>
+            <Pressable accessibilityRole="link" accessibilityState={{ selected: on }} style={styles.phoneItem}>
+              <View style={[styles.mark, { backgroundColor: on ? colors.goldBright : 'transparent' }]} />
+              <Text style={[styles.itemText, { color: on ? colors.ivory : colors.faintText }]}>{item.label}</Text>
+            </Pressable>
+          </Link>
+        );
+      })}
     </View>
   );
 }
 
-function NavItem({ item, on, underline }: { item: (typeof ITEMS)[number]; on: boolean; underline?: boolean }) {
-  return (
-    <Link href={item.href} asChild replace>
-      <Pressable
-        accessibilityRole="link"
-        accessibilityState={{ selected: on }}
-        style={StyleSheet.flatten([styles.item, underline && { borderBottomWidth: 1, borderBottomColor: on ? colors.gold : 'transparent' }])}
-      >
-        <Text style={[styles.itemText, { color: on ? colors.goldBright : colors.muted, fontFamily: on ? fonts.sansMedium : fonts.sans }]}>
-          {item.label}
-        </Text>
-      </Pressable>
-    </Link>
-  );
-}
-
 const styles = StyleSheet.create({
-  phoneBar: { flexDirection: 'row', justifyContent: 'space-around', paddingTop: 14, borderTopWidth: 1, borderTopColor: 'rgba(201,164,106,0.18)', backgroundColor: colors.ebony },
+  phoneBar: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: colors.ruleSoft, backgroundColor: colors.ebony },
+  phoneItem: { flex: 1, alignItems: 'center', minHeight: 56, paddingTop: 20 },
+  mark: { position: 'absolute', top: -1, width: 22, height: 1 },
   tabletRow: { flexDirection: 'row', alignItems: 'center', gap: 36 },
-  item: { minHeight: 44, minWidth: 64, alignItems: 'center', justifyContent: 'center' },
-  itemText: { fontSize: 10.5, letterSpacing: 3, textTransform: 'uppercase' },
-  addButton: { minHeight: 44, paddingHorizontal: 22, borderWidth: 1, borderColor: colors.gold, justifyContent: 'center' },
-  addText: { fontFamily: fonts.sansMedium, fontSize: 11, letterSpacing: 3, textTransform: 'uppercase', color: colors.goldBright },
+  tabletItem: { minHeight: 44, justifyContent: 'center', borderBottomWidth: 1 },
+  itemText: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 2.5, textTransform: 'uppercase' },
 });

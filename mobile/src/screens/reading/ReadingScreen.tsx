@@ -4,7 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import type { EngineEvent } from '@core/score/engine/protocol';
 
-import { Body, Display, Eyebrow, GoldButton, Screen, Serif, TextButton, useGutter } from '@/components/ui';
+import { BackLink, Body, Display, Eyebrow, GoldButton, Progress, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { serverUrl } from '@/config/server';
 import { useLibrary } from '@/data/libraryStore';
 import { takePendingUpload, type PendingUpload } from '@/data/pendingUpload';
@@ -101,60 +101,68 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
   const left = Math.max(0, Math.round(EXPECTED_SECONDS - elapsed));
   const steps = [
     { label: upload?.kind === 'musicxml' ? 'Opened the file' : 'Sent the page', state: phase === 'sending' ? 'now' : 'done' },
-    { label: 'Reading the notes', state: phase === 'reading' ? 'now' : phase === 'sending' ? 'next' : 'done' },
+    { label: 'Reading the notes, staff by staff', state: phase === 'reading' ? 'now' : phase === 'sending' ? 'next' : 'done' },
     { label: 'Checking every bar adds up', state: phase === 'checking' ? 'now' : phase === 'done' ? 'done' : 'next' },
-  ].filter((s) => upload?.kind !== 'musicxml' || s.label !== 'Reading the notes');
+  ].filter((s) => upload?.kind !== 'musicxml' || !s.label.startsWith('Reading the notes'));
+
+  const staffWords = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+  const staff = Math.min(7, Math.floor(fraction * 8));
+  const headline =
+    phase === 'reading' ? `Staff ${staffWords[staff]} of eight` : phase === 'checking' ? 'Checking every bar' : phase === 'done' ? 'Done' : 'Opening';
+  const pageW = tablet ? 300 : 246;
+  const pageH = tablet ? 410 : 340;
 
   return (
-    <Screen layout={layout}>
-      <View style={{ flex: 1, paddingHorizontal: g, paddingTop: tablet ? 48 : 28, alignItems: 'center' }}>
-        <Eyebrow style={{ alignSelf: 'flex-start' }}>Reading your music</Eyebrow>
-        <View style={[styles.page, tablet ? { width: 260, height: 350 } : { width: 200, height: 270 }]}>
-          <View style={styles.pageRule} />
+    <Screen layout={layout} edges={['bottom']} glow={false}>
+      <Wood variant="hero" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: tablet ? 640 : 540 }} />
+      <View style={{ paddingLeft: g - 10, paddingTop: 52 }}>
+        <BackLink label="Cancel" tone="light" onPress={() => router.back()} />
+      </View>
+      <View style={{ alignItems: 'center', marginTop: tablet ? 30 : 12 }}>
+        <View style={[styles.page, { width: pageW, height: pageH }]}>
+          <View style={{ alignItems: 'center', gap: 3, marginTop: 16 }}>
+            <View style={{ width: 70, height: 6, backgroundColor: 'rgba(20,17,14,0.55)' }} />
+            <View style={{ width: 44, height: 3, backgroundColor: 'rgba(20,17,14,0.35)' }} />
+          </View>
           {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-            <View key={i} style={{ gap: 2.6, marginHorizontal: 20, marginTop: i === 0 ? 30 : 14, opacity: i / 8 < fraction ? 0.85 : 0.22 }}>
+            <View key={i} style={{ marginHorizontal: 18, marginTop: i === 0 ? 18 : (pageH - 90) / 8 - 13, backgroundColor: i < staff || phase === 'checking' ? 'rgba(201,164,106,0.16)' : 'transparent' }}>
               {[0, 1, 2, 3, 4].map((k) => (
-                <View key={k} style={{ height: 1, backgroundColor: '#14110E' }} />
+                <View key={k} style={{ height: 1, marginBottom: k < 4 ? 3 : 0, backgroundColor: 'rgba(20,17,14,0.62)' }} />
               ))}
             </View>
           ))}
-          {phase !== 'error' && phase !== 'done' ? <View style={[styles.scan, { top: `${8 + fraction * 84}%` }]} /> : null}
+          {phase !== 'error' && phase !== 'done' ? <View style={[styles.scan, { top: `${14 + fraction * 80}%` }]} /> : null}
         </View>
+      </View>
 
-        <View style={{ alignItems: 'center', gap: 8, marginTop: 28, maxWidth: 520 }}>
-          {phase === 'error' ? (
-            <>
-              <Display size={tablet ? 36 : 28} style={{ textAlign: 'center' }}>That didn&rsquo;t work</Display>
-              <Body style={{ textAlign: 'center' }}>{error}</Body>
-              <View style={{ flexDirection: 'row', gap: 28, marginTop: 12, alignItems: 'center' }}>
-                <TextButton label="← Back" onPress={() => router.back()} />
-                <GoldButton label="Try another page" onPress={() => router.replace('/add-music')} />
-              </View>
-            </>
-          ) : (
-            <>
-              <Display size={tablet ? 36 : 28} style={{ textAlign: 'center' }}>
-                {phase === 'reading' ? 'Reading the notes' : phase === 'checking' ? 'Almost done' : 'Opening'}
-              </Display>
-              <Text style={styles.sub}>{phase === 'reading' ? (left > 0 ? `About ${left} seconds left` : 'Nearly there…') : ' '}</Text>
-              <View style={styles.bar}>
-                <View style={[styles.barFill, { width: `${fraction * 100}%` }]} />
-              </View>
-            </>
-          )}
-        </View>
-
-        {phase !== 'error' ? (
-          <View style={{ alignSelf: 'stretch', marginTop: 32, maxWidth: 560, width: '100%', marginHorizontal: 'auto' }}>
-            {steps.map((s) => (
-              <View key={s.label} style={styles.step}>
-                <Serif size={16} style={{ color: s.state === 'next' ? colors.muted : s.state === 'now' ? colors.ivory : colors.cream }}>{s.label}</Serif>
-                <Text style={[styles.state, { color: s.state === 'done' ? colors.good : s.state === 'now' ? colors.goldBright : colors.faint }]}>{s.state}</Text>
-              </View>
-            ))}
-            <Text style={[styles.sub, { textAlign: 'center', marginTop: 24, fontFamily: fonts.display }]}>You can tune up while you wait</Text>
-          </View>
-        ) : null}
+      <View style={{ paddingHorizontal: g, marginTop: 'auto', paddingBottom: 30, gap: 18, maxWidth: 640 }}>
+        {phase === 'error' ? (
+          <>
+            <Display size={tablet ? 40 : 30}>That didn&rsquo;t work</Display>
+            <Body>{error}</Body>
+            <View style={{ flexDirection: 'row', gap: 28, alignItems: 'center' }}>
+              <TextButton label="Back" onPress={() => router.back()} />
+              <GoldButton label="Try another page" onPress={() => router.replace('/add-music')} />
+            </View>
+          </>
+        ) : (
+          <>
+            <View style={{ gap: 8 }}>
+              <Eyebrow>{upload?.kind === 'musicxml' ? 'Opening your file' : 'Reading your page'}</Eyebrow>
+              <Display size={tablet ? 40 : 30}>{headline}</Display>
+            </View>
+            <Progress value={fraction} />
+            <View style={{ gap: 14 }}>
+              {steps.map((st) => (
+                <View key={st.label} style={styles.step}>
+                  <Text style={[styles.mark, { color: st.state === 'done' ? colors.gold : colors.goldBright }]}>{st.state === 'done' ? '✓' : st.state === 'now' ? '—' : ''}</Text>
+                  <Text style={[styles.stepText, { color: st.state === 'next' ? colors.faint : st.state === 'now' ? colors.ivory : colors.soft }]}>{st.label}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={styles.left}>{phase === 'reading' ? (left > 0 ? `About ${left} seconds left` : 'Nearly there…') : 'You can tune up while you wait'}</Text>
+          </>
+        )}
       </View>
       {xml ? <ScoreView xml={xml} theme="paper" render={false} onEvent={onEngine} style={styles.hidden} /> : null}
     </Screen>
@@ -162,13 +170,11 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
 }
 
 const styles = StyleSheet.create({
-  page: { marginTop: 28, backgroundColor: colors.paper, shadowColor: '#000', shadowOpacity: 0.6, shadowRadius: 20, shadowOffset: { width: 0, height: 16 }, elevation: 10, overflow: 'hidden' },
-  pageRule: { position: 'absolute', left: 10, right: 10, top: 10, bottom: 10, borderWidth: 1, borderColor: 'rgba(166,124,58,0.5)' },
-  scan: { position: 'absolute', left: 14, right: 14, height: 1, backgroundColor: '#B07F2E', shadowColor: '#B07F2E', shadowOpacity: 0.8, shadowRadius: 8 },
-  sub: { fontFamily: fonts.sans, fontSize: 13, color: colors.soft },
-  bar: { width: 240, height: 1, backgroundColor: 'rgba(201,164,106,0.25)', marginTop: 10 },
-  barFill: { height: 1, backgroundColor: colors.gold },
-  step: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.ruleSoft },
-  state: { fontFamily: fonts.sans, fontSize: 11, letterSpacing: 2, textTransform: 'uppercase' },
+  page: { backgroundColor: '#F3EEE2', transform: [{ rotate: '-1.6deg' }], shadowColor: '#000', shadowOpacity: 0.65, shadowRadius: 26, shadowOffset: { width: 0, height: 26 }, elevation: 12, overflow: 'hidden' },
+  scan: { position: 'absolute', left: 10, right: 10, height: 2, backgroundColor: colors.goldBright, shadowColor: colors.goldBright, shadowOpacity: 0.8, shadowRadius: 10 },
+  step: { flexDirection: 'row', alignItems: 'baseline', gap: 14 },
+  mark: { width: 14, fontFamily: fonts.sans, fontSize: 12 },
+  stepText: { fontFamily: fonts.sansLight, fontSize: 14 },
+  left: { fontFamily: fonts.display, fontSize: 14, color: colors.muted },
   hidden: { position: 'absolute', width: 600, height: 400, left: -10000, top: 0, opacity: 0 },
 });

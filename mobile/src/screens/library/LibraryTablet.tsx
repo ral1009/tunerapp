@@ -1,91 +1,136 @@
 import { Link } from 'expo-router';
+import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NavBar } from '@/components/nav';
-import { Body, Display, Eyebrow, GoldButton, Maple, PageThumb, Rule, Screen, Serif, TextButton, useGutter } from '@/components/ui';
-import { pageCaps, useLibrary } from '@/data/libraryStore';
+import { Display, Eyebrow, GoldButton, Progress, Screen, TextButton, Wood } from '@/components/ui';
+import { useLibrary } from '@/data/libraryStore';
+import { takeScore, useTakes } from '@/data/takesStore';
+import { useSettings } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 
-import { pieceSubtitle, usePieceStatus } from './LibraryPhone';
+import { greeting, pieceSubtitle, Plus, roman, usePieceStatus } from './LibraryPhone';
 
-function greeting(): string {
-  const hour = new Date().getHours();
-  return hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-}
+const WEEK_MS = 7 * 24 * 3600 * 1000;
 
 export function LibraryTablet() {
-  const g = useGutter('tablet');
   const { pieces, current } = useLibrary();
   const status = usePieceStatus();
+  const takes = useTakes();
+  const { settings } = useSettings();
+  const currentStatus = current ? status(current.id) : null;
+
+  // This week, across every piece: how many takes, and how the in-tune share moved.
+  const [since] = useState(() => Date.now() - WEEK_MS);
+  const week = pieces.flatMap((p) => takes.forPiece(p.id)).filter((t) => t.at >= since);
+  const scores = week.map((t) => takeScore(t, settings.reference, settings.strictness)).filter((v): v is number => v !== null);
+  const best = scores.length ? Math.max(...scores) : null;
+
   return (
-    <Screen layout="tablet">
-      <ScrollView contentContainerStyle={{ paddingHorizontal: g, paddingBottom: 56 }}>
-        <View style={styles.header}>
-          <View style={{ gap: 14 }}>
-            <Eyebrow>{greeting()}</Eyebrow>
-            <Display size={64}>Library</Display>
+    <Screen layout="tablet" edges={[]} glow={false}>
+      <View style={{ flex: 1, flexDirection: 'row' }}>
+        <Wood variant="side" style={{ width: '58%' }}>
+          <View style={{ flex: 1, paddingHorizontal: 72, paddingTop: 64, paddingBottom: 80 }}>
+            <Eyebrow tone="cream" style={{ fontSize: 11, letterSpacing: 5 }}>{greeting()}</Eyebrow>
+            <View style={{ flex: 1 }} />
+            {current ? (
+              <View style={{ gap: 18, maxWidth: 600 }}>
+                <Eyebrow tone="bright" style={{ fontSize: 11 }}>{current.openedAt ? 'Continue' : 'Start here'} · {current.measureCount} bars</Eyebrow>
+                <Link href={{ pathname: '/piece/[id]', params: { id: current.id } }} asChild>
+                  <Pressable accessibilityRole="link" style={{ gap: 10 }}>
+                    <Display size={current.title.length > 14 ? 84 : 120} numberOfLines={2} style={styles.heroTitle}>{current.title}</Display>
+                    <Text style={styles.heroSub} numberOfLines={1}>{pieceSubtitle(current)}</Text>
+                  </Pressable>
+                </Link>
+                <Progress value={currentStatus?.score != null ? currentStatus.score / 100 : 0} style={{ marginTop: 8 }} />
+                <View style={styles.heroFoot}>
+                  <Text style={styles.heroNote}>
+                    {currentStatus?.score != null ? `${currentStatus.score}% in tune last take · ${currentStatus.line}` : 'Not played yet'}
+                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 36 }}>
+                    <TextButton label="Loop a passage" href={{ pathname: '/choose-bars', params: { id: current.id } }} />
+                    <GoldButton label={current.openedAt ? 'Resume' : 'Begin'} href={{ pathname: '/practice', params: { id: current.id } }} />
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View style={{ gap: 18 }}>
+                <Display size={84} style={styles.heroTitle}>Your library is empty</Display>
+                <GoldButton label="Add music" href="/add-music" style={{ alignSelf: 'flex-start' }} />
+              </View>
+            )}
           </View>
-          <NavBar current="library" layout="tablet" />
-        </View>
-        <Rule />
+        </Wood>
 
-        {current ? (
-          <Maple direction="horizontal" style={styles.continue}>
-            <View style={styles.continueInner}>
-              <View style={{ flex: 1, minWidth: 280 }}>
-                <Eyebrow tone="bright">{current.openedAt ? 'Continue where you left off' : 'Start here'}</Eyebrow>
-                <View style={styles.titleRow}>
-                  <Display size={46} numberOfLines={1}>{current.title}</Display>
-                  <Serif size={19} style={{ color: colors.cream }}>{current.composer}</Serif>
-                </View>
-                <Body style={{ color: colors.cream }}>{status(current.id).score !== null ? `${status(current.id).score}% in tune on your last take` : 'Not played yet'} · {current.measureCount} bars</Body>
-              </View>
-              <View style={styles.continueActions}>
-                <TextButton label="Loop a passage" href={{ pathname: '/choose-bars', params: { id: current.id } }} />
-                <GoldButton label="Open" href={{ pathname: '/piece/[id]', params: { id: current.id } }} />
-              </View>
+        <View style={{ flex: 1, paddingRight: 72, paddingLeft: 56, paddingTop: 50 }}>
+          <View style={{ alignItems: 'flex-end' }}>
+            <NavBar current="library" layout="tablet" />
+          </View>
+          <ScrollView contentContainerStyle={{ paddingTop: 60, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+            <View style={styles.listHead}>
+              <Display size={40}>Library</Display>
+              <Link href="/add-music" asChild>
+                <Pressable accessibilityRole="button" style={styles.addLink}>
+                  <Plus color={colors.gold} size={12} />
+                  <Text style={styles.addText}>Add music</Text>
+                </Pressable>
+              </Link>
             </View>
-          </Maple>
-        ) : null}
-
-        <Eyebrow tone="muted" style={{ marginTop: 40, marginBottom: 22 }}>Your pieces</Eyebrow>
-        <View style={styles.grid}>
-          {pieces.map((piece) => (
-            <Link key={piece.id} href={{ pathname: '/piece/[id]', params: { id: piece.id } }} asChild>
-              <Pressable accessibilityRole="link" style={styles.tile}>
-                <PageThumb caps={pageCaps(piece)} style={styles.thumb} />
-                <View style={styles.tileTitle}>
-                  <Serif size={18} numberOfLines={1} style={{ flex: 1 }}>{piece.title}</Serif>
-                  <Display size={18} style={{ color: colors.gold }}>{status(piece.id).score === null ? '—' : `${status(piece.id).score}%`}</Display>
+            <View style={{ marginTop: 26 }}>
+              {pieces.map((piece, i) => {
+                const s = status(piece.id);
+                const isCurrent = piece.id === current?.id;
+                return (
+                  <Link key={piece.id} href={{ pathname: '/piece/[id]', params: { id: piece.id } }} asChild>
+                    <Pressable accessibilityRole="link" style={styles.row}>
+                      <Text style={styles.numeral}>{roman(i + 1)}</Text>
+                      <View style={{ flex: 1, gap: 4 }}>
+                        <Text style={[styles.title, isCurrent && { color: colors.bright }]} numberOfLines={1}>{piece.title}</Text>
+                        <Text style={styles.meta} numberOfLines={1}>
+                          {piece.measureIssues.length && s.score === null ? `${pieceSubtitle(piece)} · ${piece.measureIssues.length} bars to check` : pieceSubtitle(piece)}
+                        </Text>
+                      </View>
+                      <Text style={[styles.score, { color: s.score === null ? colors.faint : s.up || isCurrent ? colors.goldBright : colors.cream }]}>
+                        {s.score === null ? '—' : `${s.score}%`}
+                      </Text>
+                    </Pressable>
+                  </Link>
+                );
+              })}
+            </View>
+            <View style={styles.week}>
+              {[
+                ['This week', `${week.length} take${week.length === 1 ? '' : 's'}`],
+                ['Pieces', String(pieces.length)],
+                ['Best take', best === null ? '—' : `${best}%`],
+              ].map(([label, value]) => (
+                <View key={label} style={{ flex: 1, gap: 6 }}>
+                  <Text style={styles.weekLabel}>{label}</Text>
+                  <Text style={styles.weekValue}>{value}</Text>
                 </View>
-                <Text style={styles.meta} numberOfLines={1}>{pieceSubtitle(piece)}</Text>
-              </Pressable>
-            </Link>
-          ))}
-          <Link href="/add-music" asChild>
-            <Pressable accessibilityRole="button" style={styles.tile}>
-              <View style={[styles.thumb, styles.addTile]}>
-                <Display size={44} style={{ color: colors.gold }}>+</Display>
-                <Text style={[styles.meta, { color: colors.goldBright, letterSpacing: 2.5, textTransform: 'uppercase', marginTop: 0 }]}>Add music</Text>
-              </View>
-            </Pressable>
-          </Link>
+              ))}
+            </View>
+          </ScrollView>
         </View>
-      </ScrollView>
+      </View>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24, paddingTop: 40, paddingBottom: 26 },
-  continue: { marginTop: 36, borderWidth: 1, borderColor: 'rgba(201,164,106,0.35)' },
-  continueInner: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', gap: 28, padding: 40 },
-  titleRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 16, marginTop: 14, marginBottom: 10 },
-  continueActions: { flexDirection: 'row', alignItems: 'center', gap: 28 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 40 },
-  tile: { width: 190, gap: 12 },
-  thumb: { height: 260 },
-  addTile: { borderWidth: 1, borderColor: colors.rule, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  tileTitle: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
-  meta: { fontFamily: fonts.sans, fontSize: 12, color: colors.muted, marginTop: -6 },
+  heroTitle: { color: colors.bright, textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 30 },
+  heroSub: { fontFamily: fonts.serif, fontSize: 20, color: colors.cream },
+  heroFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' },
+  heroNote: { fontFamily: fonts.sansLight, fontSize: 15, color: '#CDBB9C' },
+  listHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
+  addLink: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  addText: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 3, textTransform: 'uppercase', color: colors.gold },
+  row: { minHeight: 84, flexDirection: 'row', alignItems: 'center', gap: 22, borderTopWidth: 1, borderTopColor: colors.ruleSoft },
+  numeral: { width: 30, fontFamily: fonts.serif, fontSize: 14, color: colors.goldDeep },
+  title: { fontFamily: fonts.serif, fontSize: 22, color: colors.ivory },
+  meta: { fontFamily: fonts.sansLight, fontSize: 12, color: colors.muted },
+  score: { fontFamily: fonts.display, fontSize: 26 },
+  week: { flexDirection: 'row', gap: 16, marginTop: 56, paddingTop: 22, borderTopWidth: 1, borderTopColor: colors.ruleSoft },
+  weekLabel: { fontFamily: fonts.sansMedium, fontSize: 9, letterSpacing: 3, textTransform: 'uppercase', color: colors.faint },
+  weekValue: { fontFamily: fonts.display, fontSize: 30, color: colors.ivory },
 });

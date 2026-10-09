@@ -5,7 +5,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import type { EngineEvent } from '@core/score/engine/protocol';
 import type { CursorNoteInfo } from '@core/score/renderer/scoreCursor';
 
-import { Display, Eyebrow, GoldButton, Rule, Screen, TextButton, useGutter } from '@/components/ui';
+import { BackLink, Display, Eyebrow, GoldButton, paperSheet, Purfling, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { useLibrary } from '@/data/libraryStore';
 import { ScoreView, type ScoreViewHandle } from '@/score/ScoreView';
 import { useScoreTheme, type LayoutMode } from '@/theme/settings';
@@ -31,7 +31,7 @@ export function ChooseBarsScreen({ layout, id }: { layout: LayoutMode; id: strin
     return (
       <Screen layout={layout}>
         <View style={{ padding: g, gap: 16 }}>
-          <TextButton label="← Library" onPress={() => router.replace('/')} />
+          <BackLink label="Library" onPress={() => router.replace('/')} />
           <Display size={36}>This piece isn&rsquo;t in your library</Display>
         </View>
       </Screen>
@@ -54,43 +54,48 @@ export function ChooseBarsScreen({ layout, id }: { layout: LayoutMode; id: strin
   const noteCount = range ? notes.filter((n) => n.measureIndex >= range.from && n.measureIndex <= range.to).length : 0;
   const label = range ? (range.from === range.to ? `Bar ${range.from + 1}` : `Bars ${range.from + 1} – ${range.to + 1}`) : 'No bars yet';
 
+  const start = () => range && router.replace({ pathname: '/practice', params: { id: piece.id, from: String(range.from + 1), to: String(range.to + 1) } });
+
   return (
-    <Screen layout={layout}>
+    <Screen layout={layout} edges={['top']}>
       <View style={{ flex: 1 }}>
-        <View style={[styles.header, { paddingHorizontal: g }, tablet && { paddingTop: 30 }]}>
-          <View style={{ gap: 8, flex: 1 }}>
-            <TextButton label={`← ${piece.title}`} onPress={() => router.back()} />
-            <Display size={tablet ? 52 : 34}>Which bars?</Display>
-          </View>
-          <Text style={[styles.hint, tablet && { maxWidth: 380, textAlign: 'right' }]}>
-            {awaitingEnd ? 'Now tap the last bar — or start to loop just this one.' : 'Tap the first bar, then the last. Tap again to start over.'}
+        <View style={{ paddingLeft: g - 10, paddingTop: 6 }}>
+          <BackLink label={piece.title} onPress={() => router.back()} />
+        </View>
+        <View style={[styles.title, { paddingHorizontal: g }]}>
+          <Display size={tablet ? 52 : 34}>Loop a passage</Display>
+          <Text style={styles.hint}>
+            {awaitingEnd ? 'Now tap the last bar — or start to loop just this one.' : 'Tap the first bar, then the last.'}
           </Text>
         </View>
-        <Rule style={{ marginHorizontal: g, marginBottom: 14 }} />
-        <ScoreView ref={score} xml={piece.xml} theme={theme} onEvent={onEngine} style={[styles.score, { marginHorizontal: tablet ? g - 28 : 10 }, theme === 'paper' && styles.paper]} />
-        <View style={[styles.footer, { paddingHorizontal: g }, !tablet && { flexDirection: 'column', alignItems: 'stretch' }]}>
-          <View style={{ gap: 6 }}>
-            <Eyebrow>Loop</Eyebrow>
-            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
-              <Display size={tablet ? 38 : 30} style={{ color: range ? colors.bright : colors.muted }}>{label}</Display>
-              {range ? <Text style={styles.hint}>{noteCount} notes</Text> : null}
+        <ScoreView ref={score} xml={piece.xml} theme={theme} onEvent={onEngine} style={[styles.score, { marginHorizontal: tablet ? 48 : 12 }, theme === 'paper' && paperSheet]} />
+        <Wood variant="band">
+          <Purfling style={{ marginTop: 30 }} />
+          <View style={[styles.bandInner, { paddingHorizontal: g }, tablet && styles.bandTablet]}>
+            <View style={{ gap: 6, flex: tablet ? 1 : undefined }}>
+              <Eyebrow tone="bright">Loop</Eyebrow>
+              <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+                <Display size={tablet ? 44 : 38} style={{ color: range ? colors.bright : colors.muted }}>{label}</Display>
+                {range ? <Text style={styles.count}>{noteCount} notes</Text> : null}
+              </View>
+            </View>
+            <View style={styles.controls}>
+              <TextButton label="Clear" onPress={() => { setRange(null); setAwaitingEnd(false); }} />
+              <GoldButton label="Start looping" onPress={start} disabled={!range} />
             </View>
           </View>
-          <GoldButton
-            label="Start looping"
-            onPress={() => range && router.replace({ pathname: '/practice', params: { id: piece.id, from: String(range.from + 1), to: String(range.to + 1) } })}
-            style={!range ? { opacity: 0.4 } : undefined}
-          />
-        </View>
+        </Wood>
       </View>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', gap: 16, paddingTop: 14, paddingBottom: 14 },
-  hint: { fontFamily: fonts.display, fontSize: 16, lineHeight: 23, color: colors.soft },
-  score: { flex: 1, marginBottom: 14 },
-  paper: { backgroundColor: colors.paper, shadowColor: '#000', shadowOpacity: 0.6, shadowRadius: 24, shadowOffset: { width: 0, height: 14 }, elevation: 10 },
-  footer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 20, paddingVertical: 20, borderTopWidth: 1, borderTopColor: 'rgba(201,164,106,0.3)' },
+  title: { gap: 6, paddingTop: 10, paddingBottom: 16 },
+  hint: { fontFamily: fonts.sansLight, fontSize: 13, color: colors.soft },
+  score: { flex: 1, marginBottom: 18 },
+  bandInner: { paddingTop: 22, paddingBottom: 28, gap: 18 },
+  bandTablet: { flexDirection: 'row', alignItems: 'center', gap: 40, paddingTop: 30, paddingBottom: 36 },
+  count: { fontFamily: fonts.sansLight, fontSize: 12, color: colors.cream },
+  controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 32 },
 });

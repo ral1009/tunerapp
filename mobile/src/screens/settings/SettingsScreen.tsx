@@ -1,82 +1,124 @@
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
+import { Link } from 'expo-router';
+import type { ReactNode } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NavBar } from '@/components/nav';
-import { Choice, Display, Rule, Screen, Serif, TextButton, useGutter } from '@/components/ui';
+import { Choice, Display, Screen, useGutter, Wood } from '@/components/ui';
 import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { woodFor } from '@/theme/woods';
 
-// One screen for both layouts: on iPad the rows sit in two columns under a large title.
+function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <View style={styles.row}>
+      <View style={{ flexShrink: 1, gap: 3 }}>
+        <Text style={styles.label}>{label}</Text>
+        {hint ? <Text style={styles.hint}>{hint}</Text> : null}
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function Chevron() {
+  return <View style={styles.chevron} />;
+}
+
 export function SettingsScreen({ layout }: { layout: LayoutMode }) {
   const { settings, update } = useSettings();
   const g = useGutter(layout);
   const tablet = layout === 'tablet';
+  const wood = woodFor(settings.wood);
 
-  const rows = [
+  const groups: { title: string; rows: ReactNode }[] = [
     {
-      title: 'Screens',
-      hint: 'Auto uses the iPad screens on an iPad and the phone screens on a phone. Pick either to use it on any device.',
-      control: (
-        <Choice label="Screens" value={settings.layout} onChange={(layout) => update({ layout })}
-          options={[{ value: 'auto', label: 'Auto' }, { value: 'phone', label: 'Phone' }, { value: 'tablet', label: 'iPad' }]} />
+      title: 'Look',
+      rows: (
+        <>
+          <Row label="Screens" hint={tablet ? 'Auto picks phone or iPad screens by device.' : undefined}>
+            <Choice label="Screens" gap={16} value={settings.layout} onChange={(value) => update({ layout: value })}
+              options={[{ value: 'phone', label: 'Phone' }, { value: 'tablet', label: 'iPad' }, { value: 'auto', label: 'Auto' }]} />
+          </Row>
+          <Row label="Score page">
+            <Choice label="Score page" gap={16} value={settings.scoreTheme === 'ebony' ? 'ebony' : 'paper'} onChange={(value) => update({ scoreTheme: value })}
+              options={[{ value: 'paper', label: 'Paper' }, { value: 'ebony', label: 'Ebony' }]} />
+          </Row>
+          <Link href="/wood" asChild>
+            <Pressable accessibilityRole="link" style={styles.row}>
+              <Text style={styles.label}>Wood</Text>
+              <View style={styles.linkValue}>
+                <View style={styles.swatchFrame}>
+                  <Image source={wood.source} style={{ width: 34, height: 22 }} contentFit="cover" contentPosition={{ left: `${wood.focus.x * 100}%`, top: `${wood.focus.y * 100}%` }} />
+                </View>
+                <Text style={styles.value}>{wood.name}</Text>
+                <Chevron />
+              </View>
+            </Pressable>
+          </Link>
+        </>
       ),
     },
     {
-      title: 'Score',
-      hint: 'How the music looks on the stand. Auto turns to ebony in a dark room.',
-      control: (
-        <Choice label="Score" value={settings.scoreTheme} onChange={(scoreTheme) => update({ scoreTheme })}
-          options={[{ value: 'paper', label: 'Paper' }, { value: 'ebony', label: 'Ebony' }, { value: 'auto', label: 'Auto' }]} />
+      title: 'Grading',
+      rows: (
+        <>
+          <Row label="Grade against">
+            <Choice label="Grade against" gap={16} value={settings.reference} onChange={(value) => update({ reference: value })}
+              options={[{ value: 'a440', label: `A${settings.referencePitchHz}` }, { value: 'own', label: 'My tuning' }]} />
+          </Row>
+          <Row label="Strictness" hint={tablet ? 'In tune within 25, 15 or 8 cents.' : undefined}>
+            <Choice label="Strictness" gap={14} value={settings.strictness} onChange={(value) => update({ strictness: value })}
+              options={[{ value: 'relaxed', label: 'Relaxed' }, { value: 'standard', label: 'Standard' }, { value: 'strict', label: 'Strict' }]} />
+          </Row>
+          <Row label="Reference pitch">
+            <View style={styles.stepper}>
+              {([440, 442, 443] as const).map((hz) => {
+                const on = hz === settings.referencePitchHz;
+                return (
+                  <Pressable key={hz} accessibilityRole="radio" accessibilityState={{ checked: on }} onPress={() => update({ referencePitchHz: hz })} hitSlop={6}
+                    style={[styles.hz, { borderBottomColor: on ? colors.goldBright : 'transparent' }]}>
+                    <Text style={[styles.hzText, { color: on ? colors.bright : colors.faintText }]}>{hz}</Text>
+                  </Pressable>
+                );
+              })}
+              <Text style={styles.hzUnit}>Hz</Text>
+            </View>
+          </Row>
+        </>
       ),
     },
     {
-      title: 'Grade against',
-      hint: 'Concert pitch, or the pitch your open strings are tuned to.',
-      control: (
-        <Choice label="Grade against" value={settings.reference} onChange={(reference) => update({ reference })}
-          options={[{ value: 'a440', label: `A ${settings.referencePitchHz}` }, { value: 'own', label: 'My tuning' }]} />
-      ),
-    },
-    {
-      title: 'How strict',
-      hint: 'In tune within 25, 15 or 8 cents.',
-      control: (
-        <Choice label="How strict" value={settings.strictness} onChange={(strictness) => update({ strictness })}
-          options={[{ value: 'relaxed', label: 'Relaxed' }, { value: 'standard', label: 'Standard' }, { value: 'strict', label: 'Strict' }]} />
-      ),
-    },
-    {
-      title: 'Reference pitch',
-      hint: 'For the tuner and for grading against A.',
-      control: (
-        <Choice label="Reference pitch" value={settings.referencePitchHz} onChange={(referencePitchHz) => update({ referencePitchHz })}
-          options={[{ value: 440, label: '440' }, { value: 442, label: '442' }, { value: 443, label: '443' }]} />
+      title: 'Microphone',
+      rows: (
+        <Link href="/mic-check" asChild>
+          <Pressable accessibilityRole="link" style={styles.row}>
+            <Text style={styles.label}>Check microphone</Text>
+            <View style={styles.linkValue}>
+              <Text style={styles.value}>Room noise and your strings</Text>
+              <Chevron />
+            </View>
+          </Pressable>
+        </Link>
       ),
     },
   ];
 
   return (
-    <Screen layout={layout} edges={tablet ? ['top', 'bottom'] : ['top']}>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: g, paddingBottom: 40 }}>
-        <View style={[styles.header, tablet && styles.headerTablet]}>
-          <Display size={tablet ? 64 : 36}>Settings</Display>
+    <Screen layout={layout} edges={tablet ? ['bottom'] : []} glow={false}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+        <Wood variant="hero" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: tablet ? 260 : 200 }} />
+        <View style={[styles.header, { paddingHorizontal: g }, tablet && styles.headerTablet]}>
+          <Display size={tablet ? 64 : 44}>Settings</Display>
           {tablet ? <NavBar current="settings" layout="tablet" /> : null}
         </View>
-        {tablet ? <Rule /> : null}
-        <View style={tablet ? styles.columns : null}>
-          {rows.map((row) => (
-            <View key={row.title} style={[styles.row, tablet && styles.rowTablet]}>
-              <Serif size={19}>{row.title}</Serif>
-              <Text style={styles.hint}>{row.hint}</Text>
-              {row.control}
+        <View style={[{ paddingHorizontal: g }, tablet && styles.columns]}>
+          {groups.map((group) => (
+            <View key={group.title} style={[styles.group, tablet && { width: 520 }]}>
+              <Text style={styles.groupTitle}>{group.title}</Text>
+              {group.rows}
             </View>
           ))}
-          <View style={[styles.row, tablet && styles.rowTablet, styles.micRow]}>
-            <View style={{ flex: 1, gap: 4 }}>
-              <Serif size={19}>Microphone</Serif>
-              <Text style={styles.hint}>Not checked yet on this device</Text>
-            </View>
-            <TextButton label="Check" tone="gold" href="/mic-check" />
-          </View>
         </View>
       </ScrollView>
       {tablet ? null : <NavBar current="settings" layout="phone" />}
@@ -85,11 +127,20 @@ export function SettingsScreen({ layout }: { layout: LayoutMode }) {
 }
 
 const styles = StyleSheet.create({
-  header: { paddingTop: 24, paddingBottom: 10 },
-  headerTablet: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24, paddingTop: 40, paddingBottom: 26 },
+  header: { paddingTop: 96, paddingBottom: 6 },
+  headerTablet: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', paddingTop: 120, paddingBottom: 20 },
   columns: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 64 },
-  row: { gap: 8, paddingVertical: 20, borderBottomWidth: 1, borderBottomColor: colors.ruleSoft },
-  rowTablet: { width: 520, maxWidth: '100%' },
-  micRow: { flexDirection: 'row', alignItems: 'center' },
-  hint: { fontFamily: fonts.sans, fontSize: 12.5, lineHeight: 19, color: colors.muted },
+  group: { paddingTop: 18 },
+  groupTitle: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 3.5, textTransform: 'uppercase', color: colors.muted },
+  row: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, borderBottomWidth: 1, borderBottomColor: colors.ruleSoft },
+  label: { fontFamily: fonts.serif, fontSize: 17, color: colors.ivory },
+  hint: { fontFamily: fonts.sansLight, fontSize: 11, color: colors.muted },
+  linkValue: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 44 },
+  value: { fontFamily: fonts.sansLight, fontSize: 12, color: colors.cream },
+  swatchFrame: { padding: 2, borderWidth: 1, borderColor: 'rgba(201,164,106,0.35)' },
+  chevron: { width: 7, height: 7, borderRightWidth: 1.2, borderTopWidth: 1.2, borderColor: colors.gold, transform: [{ rotate: '45deg' }], marginRight: 3 },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  hz: { minHeight: 44, justifyContent: 'center', borderBottomWidth: 1 },
+  hzText: { fontFamily: fonts.display, fontSize: 18 },
+  hzUnit: { fontFamily: fonts.sans, fontSize: 11, color: colors.muted },
 });

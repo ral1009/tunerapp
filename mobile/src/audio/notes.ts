@@ -40,3 +40,16 @@ export function tuningAdvice(cents: number): string {
   if (size > 35) return cents < 0 ? 'well flat — bring the peg up a little' : 'well sharp — ease the peg down a little';
   return cents < 0 ? 'a touch flat — turn the fine tuner gently clockwise' : 'a touch sharp — turn the fine tuner gently anticlockwise';
 }
+
+const FINGERS = ['open', 'first finger', 'first finger', 'second finger', 'second finger', 'third finger', 'fourth finger', 'fourth finger'];
+
+// Where a note sits in first position: the highest open string at or below it, and the finger
+// (a semitone or two above the open string is first finger, and so on). Above first position on
+// the E string, just the string. A guide for the readout, not a fingering engine.
+export function firstPosition(midi: number): string | null {
+  const string = [...OPEN_STRINGS].reverse().find((s) => midi >= s.midi);
+  if (!string) return null;
+  const semitones = midi - string.midi;
+  const name = `${string.name} string`;
+  return semitones < FINGERS.length ? `${name} · ${FINGERS[semitones]}` : name;
+}

@@ -1,10 +1,10 @@
-import { router } from 'expo-router';
+import { Link, router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { EngineEvent, ScoreMeta } from '@core/score/engine/protocol';
 
-import { Body, Display, Eyebrow, GoldButton, Rule, Screen, Serif, TextButton, useGutter } from '@/components/ui';
+import { Arrow, BackLink, Body, Display, Eyebrow, GoldButton, Screen, Serif, useGutter, Wood } from '@/components/ui';
 import { useLibrary } from '@/data/libraryStore';
 import { takeScore, useTakes } from '@/data/takesStore';
 import { gradeTake, gradingOptions } from '@core/practice/reviewSummary';
@@ -35,7 +35,7 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
     return (
       <Screen layout={layout}>
         <View style={{ padding: g, gap: 16 }}>
-          <TextButton label="← Library" onPress={() => router.replace('/')} />
+          <BackLink label="Library" onPress={() => router.replace('/')} />
           <Display size={36}>This piece isn&rsquo;t in your library</Display>
         </View>
       </Screen>
@@ -46,42 +46,21 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
     if (event.type === 'loaded') setMeta(event.meta);
   };
 
-  const details = [
-    `${piece.measureCount} bars`,
-    meta?.keySignature ? `${meta.keySignature}` : null,
-    meta?.timeSignature ?? null,
-    meta?.tempoBpm ? `♩ = ${meta.tempoBpm}` : null,
-  ].filter(Boolean).join(' · ');
+  const sourceWord = piece.source === 'photo' ? 'from a photo' : piece.source === 'file' ? 'from a file' : 'starter piece';
+  const details = [`${piece.measureCount} bars`, sourceWord, takes.length ? `${takes.length} take${takes.length === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
+  const eyebrow = [piece.composer || null, meta?.timeSignature ?? null, meta?.tempoBpm ? `♩ = ${meta.tempoBpm}` : null].filter(Boolean).join(' · ');
   const issues = piece.measureIssues;
   const params = { id: piece.id };
 
-  const actions = (
-    <View style={[styles.actions, tablet && { flexDirection: 'column', alignItems: 'stretch', gap: 6 }]}>
-      <GoldButton label="Play from the start" href={{ pathname: '/practice', params }} style={tablet ? undefined : { flex: 1 }} />
-      <TextButton label="Loop a passage" href={{ pathname: '/choose-bars', params }} style={tablet ? { alignSelf: 'center' } : undefined} />
-    </View>
-  );
-
-  const issueNote = issues.length ? (
-    <View style={styles.issue}>
-      <Text style={styles.issueTitle}>
-        {issues.length === 1 ? '1 bar doesn’t add up' : `${issues.length} bars don’t add up`}
-      </Text>
-      <Body style={{ fontSize: 13 }}>
-        Usually a note the photo reading got wrong: bar {issues.slice(0, 6).map((i) => i.measureNumber).join(', ')}
-        {issues.length > 6 ? '…' : ''}. Following can stall there.
-      </Body>
-      <TextButton label="Check those bars →" tone="gold" href={{ pathname: '/fix-bar', params }} />
-    </View>
-  ) : null;
-
-  // Oldest to newest whole-piece scores, for the progress line.
+  // Oldest to newest whole-piece scores, for the trend.
   const wholeScores = takes
     .filter((t) => !t.region)
     .map((t) => takeScore(t, settings.reference, settings.strictness))
     .filter((v): v is number => v !== null)
     .reverse()
     .slice(-6);
+  const lastScore = wholeScores.length ? wholeScores[wholeScores.length - 1] : null;
+  const firstScore = wholeScores.length ? wholeScores[0] : null;
   // Per bar, across every take: how often it had a note out of tune or close.
   const trouble = new Array<number>(piece.measureCount).fill(-1);
   for (const take of takes) {
@@ -93,114 +72,168 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
       else if (r.verdict === 'close') trouble[bar] += 1;
     }
   }
-  const troubleColor = (v: number) => (v < 0 ? '#1E1813' : v >= Math.max(3, takes.length * 2) ? '#E06A55' : v > 0 ? '#B88A3E' : '#3A2E24');
+  const worstLevel = Math.max(3, takes.length * 2);
+  const worstBars = trouble.map((v, i) => ({ v, bar: i + 1 })).filter((b) => b.v >= worstLevel).map((b) => b.bar);
+  const troubleColor = (v: number) => (v < 0 ? 'rgba(237,227,207,0.10)' : v >= worstLevel ? colors.outSoft : v >= 2 ? colors.close : v > 0 ? 'rgba(224,174,85,0.5)' : 'rgba(237,227,207,0.16)');
+  const troubleHeight = (v: number) => (v <= 0 ? 6 : v >= worstLevel ? 21 : v >= 2 ? 16 : 11);
+  const worstLine = worstBars.length ? `${worstBars.length > 1 ? 'bars' : 'bar'} ${worstBars.slice(0, 3).join(', ')}, every take` : null;
 
-  const takesBlock = (
-    <View style={{ gap: 6 }}>
-      {wholeScores.length ? (
-        <View style={{ marginBottom: 14 }}>
-          <Eyebrow tone="muted">In tune, take by take</Eyebrow>
-          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
-            {wholeScores.map((v, i) => (
-              <Text key={i} style={i === wholeScores.length - 1 ? styles.scoreLast : styles.scoreOld}>{v}%</Text>
-            ))}
-          </View>
-        </View>
-      ) : null}
-      {takes.length ? (
-        <View style={{ marginBottom: 14 }}>
-          <Eyebrow tone="muted">Where the trouble is</Eyebrow>
-          <View style={{ flexDirection: 'row', gap: 1, height: 26, marginTop: 10 }}>
-            {trouble.map((v, i) => (
-              <View key={i} style={{ flex: 1, backgroundColor: troubleColor(v) }} />
-            ))}
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
-            <Text style={styles.small}>Bar 1</Text>
-            <Text style={styles.small}>Bar {piece.measureCount}</Text>
-          </View>
-        </View>
-      ) : null}
-      <Eyebrow tone="muted">Takes</Eyebrow>
-      {takes.length === 0 ? (
-        <View style={styles.emptyTakes}>
-          <Serif size={17} style={{ color: colors.cream }}>No takes yet</Serif>
-          <Body style={{ fontSize: 13 }}>Play it through once and your progress, and the bars that need work, will show here.</Body>
-        </View>
-      ) : (
-        takes.slice(0, 8).map((t) => {
-          const v = takeScore(t, settings.reference, settings.strictness);
-          return (
-            <Pressable key={t.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/review', params: { takeId: t.id } })} style={styles.takeRow}>
-              <View style={{ flex: 1 }}>
-                <Serif size={16}>{new Date(t.at).toLocaleDateString([], { month: 'short', day: 'numeric' })}, {new Date(t.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Serif>
-                <Text style={styles.small}>{t.region ? `Loop, bars ${t.region.fromBar}–${t.region.toBar}` : 'Whole piece'}</Text>
-              </View>
-              <Display size={20}>{v === null ? '—' : `${v}%`}</Display>
-            </Pressable>
-          );
-        })
-      )}
-    </View>
-  );
-
-  const score = <ScoreView xml={piece.xml} theme={theme} onEvent={onEngine} style={[styles.score, theme === 'paper' ? styles.paper : styles.ebony]} />;
-
-  const header = (
-    <View style={{ gap: 12 }}>
-      <TextButton label="← Library" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
-      <View style={styles.titleRow}>
-        <Display size={tablet ? 60 : 38} numberOfLines={2}>{piece.title}</Display>
-        {piece.composer ? <Serif size={tablet ? 21 : 16} style={{ color: colors.soft }}>{piece.composer}</Serif> : null}
-      </View>
+  const titleBlock = (
+    <View style={{ gap: 8 }}>
+      {eyebrow ? <Eyebrow tone="bright">{eyebrow}</Eyebrow> : null}
+      <Display size={tablet ? 84 : piece.title.length > 14 ? 46 : 60} numberOfLines={2} style={{ textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 20 }}>{piece.title}</Display>
       <Text style={styles.details}>{details}</Text>
     </View>
   );
 
+  const progress = takes.length ? (
+    <View style={{ gap: 26 }}>
+      <View style={styles.trendRow}>
+        <View style={{ gap: 4 }}>
+          <Eyebrow tone="muted">Last take</Eyebrow>
+          <Text style={styles.last}>
+            {lastScore === null ? '—' : lastScore}
+            {lastScore !== null ? <Text style={styles.lastSign}>%</Text> : null}
+          </Text>
+        </View>
+        {wholeScores.length > 1 ? (
+          <View style={{ alignItems: 'flex-end', gap: 8 }}>
+            <View style={styles.trend} accessible accessibilityLabel={`Last takes: ${wholeScores.join(', ')} percent`}>
+              {wholeScores.map((v, i) => (
+                <View key={i} style={{ width: 2, height: Math.max(3, (v / 100) * 44), backgroundColor: i === wholeScores.length - 1 ? colors.goldBright : 'rgba(237,227,207,0.35)' }} />
+              ))}
+            </View>
+            {firstScore !== null && lastScore !== null ? (
+              <Text style={styles.small}>{lastScore >= firstScore ? `up ${lastScore - firstScore}` : `down ${firstScore - lastScore}`} over {wholeScores.length} takes</Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+      <View style={{ gap: 10 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <Eyebrow tone="muted">Where the trouble is</Eyebrow>
+          {worstLine ? <Text style={styles.worst}>{worstLine}</Text> : null}
+        </View>
+        <View style={styles.strip} accessible accessibilityLabel="Trouble across the bars">
+          {trouble.map((v, i) => (
+            <View key={i} style={{ flex: 1, height: troubleHeight(v), backgroundColor: troubleColor(v) }} />
+          ))}
+        </View>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+          <Text style={styles.tiny}>1</Text>
+          <Text style={styles.tiny}>{piece.measureCount}</Text>
+        </View>
+      </View>
+    </View>
+  ) : (
+    <View style={{ gap: 6 }}>
+      <Serif size={18} style={{ color: colors.cream }}>No takes yet</Serif>
+      <Body style={{ fontSize: 13 }}>Play it through once and your progress, and the bars that need work, will show here.</Body>
+    </View>
+  );
+
+  const actions = (
+    <View>
+      <GoldButton label="Practise" href={{ pathname: '/practice', params }} style={{ minHeight: 52 }} />
+      <Link href={{ pathname: '/choose-bars', params }} asChild>
+        <Pressable accessibilityRole="link" style={StyleSheet.flatten([styles.actionRow, { marginTop: 8 }])}>
+          <Text style={styles.actionText}>Loop a passage</Text>
+          <Arrow />
+        </Pressable>
+      </Link>
+      {issues.length ? (
+        <Link href={{ pathname: '/fix-bar', params }} asChild>
+          <Pressable accessibilityRole="link" style={styles.actionRow}>
+            <Text style={styles.actionText}>
+              Check misread bars <Text style={styles.issueCount}>· {issues.length} to check</Text>
+            </Text>
+            <Arrow />
+          </Pressable>
+        </Link>
+      ) : null}
+    </View>
+  );
+
+  const recent = takes.length ? (
+    <View>
+      <Eyebrow tone="muted">Recent takes</Eyebrow>
+      <View style={{ marginTop: 6 }}>
+        {takes.slice(0, tablet ? 8 : 4).map((t) => {
+          const v = takeScore(t, settings.reference, settings.strictness);
+          const d = new Date(t.at);
+          const day = d.toDateString() === new Date().toDateString() ? 'Today' : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+          const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toLowerCase();
+          const what = t.region ? `loop, bars ${t.region.fromBar}–${t.region.toBar}` : 'whole piece';
+          return (
+            <Pressable key={t.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/review', params: { takeId: t.id } })} style={styles.takeRow}>
+              <Text style={styles.takeText}>{`${day}, ${time} · ${what}`}</Text>
+              <Text style={styles.takeScore}>{v === null ? '—' : `${v}%`}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  ) : null;
+
+  // Read the score once for its time signature and tempo (not drawn).
+  const reader = <ScoreView xml={piece.xml} theme={theme} render={false} onEvent={onEngine} style={styles.hidden} />;
+
   if (tablet) {
     return (
-      <Screen layout={layout}>
-        <View style={{ flex: 1, paddingHorizontal: g, paddingTop: 36, paddingBottom: 32 }}>
-          {header}
-          <Rule style={{ marginTop: 26, marginBottom: 28 }} />
-          <View style={{ flex: 1, flexDirection: 'row', gap: 56 }}>
-            <View style={{ flex: 1 }}>{score}</View>
-            <ScrollView style={{ width: 320, flexGrow: 0 }} contentContainerStyle={{ gap: 28 }}>
-              {actions}
-              {issueNote}
-              {takesBlock}
-            </ScrollView>
-          </View>
+      <Screen layout={layout} edges={[]} glow={false}>
+        <View style={{ flex: 1, flexDirection: 'row' }}>
+          <Wood variant="side" style={{ width: '56%' }}>
+            <View style={{ flex: 1, paddingHorizontal: g, paddingTop: 44, paddingBottom: 72 }}>
+              <BackLink label="Library" tone="light" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
+              <View style={{ flex: 1 }} />
+              {titleBlock}
+            </View>
+          </Wood>
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingLeft: 48, paddingRight: g, paddingTop: 110, paddingBottom: 48, gap: 40 }}>
+            {progress}
+            {actions}
+            {recent}
+          </ScrollView>
         </View>
+        {reader}
       </Screen>
     );
   }
 
   return (
-    <Screen layout={layout}>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: g, paddingTop: 22, paddingBottom: 32, gap: 22 }}>
-        {header}
-        <View style={{ height: 300 }}>{score}</View>
-        {actions}
-        {issueNote}
-        {takesBlock}
+    <Screen layout={layout} edges={['bottom']} glow={false}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
+        <Wood variant="hero" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 340 }} />
+        <View style={{ paddingLeft: g - 10, paddingTop: 52 }}>
+          <BackLink label="Library" tone="light" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
+        </View>
+        <View style={{ paddingHorizontal: g, marginTop: 70, gap: 30 }}>
+          {titleBlock}
+          {progress}
+          {actions}
+          {recent}
+        </View>
       </ScrollView>
+      {reader}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  titleRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 16 },
-  details: { fontFamily: fonts.sans, fontSize: 12, letterSpacing: 2, textTransform: 'uppercase', color: colors.muted },
-  score: { flex: 1 },
-  paper: { backgroundColor: colors.paper, shadowColor: '#000', shadowOpacity: 0.6, shadowRadius: 24, shadowOffset: { width: 0, height: 18 }, elevation: 10 },
-  ebony: { borderTopWidth: 1, borderBottomWidth: 1, borderColor: colors.rule },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: 24 },
-  issue: { gap: 6, paddingVertical: 16, borderTopWidth: 1, borderBottomWidth: 1, borderColor: 'rgba(240,112,90,0.35)' },
-  issueTitle: { fontFamily: fonts.serif, fontSize: 18, color: colors.out },
-  scoreOld: { fontFamily: fonts.serif, fontSize: 17, color: colors.muted },
-  scoreLast: { fontFamily: fonts.display, fontSize: 30, color: colors.ivory },
-  small: { fontFamily: fonts.sans, fontSize: 11, color: colors.faint },
-  takeRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.ruleSoft, minHeight: 52 },
-  emptyTakes: { gap: 6, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.ruleSoft },
+  details: { fontFamily: fonts.sansLight, fontSize: 13, color: colors.cream },
+  trendRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
+  last: { fontFamily: fonts.display, fontSize: 46, lineHeight: 48, color: colors.bright },
+  lastSign: { fontFamily: fonts.serif, fontSize: 20, color: colors.cream },
+  trend: { flexDirection: 'row', alignItems: 'flex-end', gap: 9, height: 44 },
+  small: { fontFamily: fonts.sansLight, fontSize: 11, color: colors.soft },
+  worst: { fontFamily: fonts.display, fontSize: 13, color: colors.outSoft },
+  strip: { flexDirection: 'row', alignItems: 'flex-end', gap: 1.5, height: 22 },
+  tiny: { fontFamily: fonts.sans, fontSize: 10, color: colors.faint },
+  actionRow: { minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: colors.ruleSoft },
+  actionText: { fontFamily: fonts.serif, fontSize: 18, color: colors.ivory },
+  issueCount: { fontFamily: fonts.sansLight, fontSize: 12, color: colors.close },
+  takeRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  takeText: { flex: 1, fontFamily: fonts.sansLight, fontSize: 13, color: colors.cream },
+  takeScore: { fontFamily: fonts.display, fontSize: 17, color: colors.goldBright },
+  hidden: { position: 'absolute', width: 600, height: 400, left: -10000, top: 0, opacity: 0 },
 });

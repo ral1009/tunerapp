@@ -8,6 +8,8 @@ import { useMic } from './useMic';
 const EMPTY: TunerReading = { status: 'calibrating', frequencyHz: null, confidence: 0, rms: 0, noiseFloorRms: 0, gain: 1 };
 // The last confident pitch stays on screen this long, so the display doesn't blank between strokes.
 const HOLD_MS = 900;
+// How many recent levels the meter shows.
+const LEVEL_HISTORY = 48;
 
 export interface StringState {
   name: string;
@@ -21,6 +23,7 @@ export interface TunerState {
   strings: StringState[];
   currentString: number | null; // index into strings, when an open string is being played
   peakSignalRatio: number; // loudest pitched playing so far, as a multiple of the room's floor
+  levels: number[]; // recent raw input levels, oldest first, for a level meter
   micStatus: MicStatus;
   micError: string | null;
   restart: () => void;
@@ -36,6 +39,7 @@ export function useTuner(referenceA4: number): TunerState {
   const [strings, setStrings] = useState<StringState[]>(() => OPEN_STRINGS.map((s) => ({ ...s, cents: null })));
   const [currentString, setCurrentString] = useState<number | null>(null);
   const [peakSignalRatio, setPeakSignalRatio] = useState(0);
+  const [levels, setLevels] = useState<number[]>([]);
   const tunerRef = useRef<LiveTuner | null>(null);
   const referenceRef = useRef(referenceA4);
 
@@ -48,6 +52,7 @@ export function useTuner(referenceA4: number): TunerState {
     let recent: number[] = [];
     tunerRef.current = new LiveTuner((next) => {
       setReading(next);
+      setLevels((prev) => [...prev.slice(-(LEVEL_HISTORY - 1)), next.rms]);
       const now = Date.now();
       if (!next.frequencyHz) {
         recent = [];
@@ -102,7 +107,7 @@ export function useTuner(referenceA4: number): TunerState {
     void start();
   }, [start, stop]);
 
-  return { reading, heldHz, strings, currentString, peakSignalRatio, micStatus: mic.status, micError: mic.error, restart };
+  return { reading, heldHz, strings, currentString, peakSignalRatio, levels, micStatus: mic.status, micError: mic.error, restart };
 }
 
 export function currentStringCents(state: TunerState, referenceA4: number): number | null {
