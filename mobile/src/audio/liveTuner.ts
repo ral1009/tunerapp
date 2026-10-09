@@ -17,7 +17,9 @@ import { calculateRms } from '@core/audio/preprocessing';
 // This is the live readout only. Grading uses the full-rate recording after the take.
 
 const CONFIDENCE_THRESHOLD = 0.67;
-const SMOOTHING_FRAMES = 5;
+// Median of the last 3 readings. Judged against known pitches (.scratch/eval_readout.ts): same
+// accuracy as 5 (0.6¢ median, 1.4¢ p90) but a new note shows after ~220 ms instead of ~340 ms.
+const SMOOTHING_FRAMES = 3;
 const CALIBRATION_WINDOW_MS = 500;
 const CALIBRATION_GATE_RATIO = 1.5;
 const CALIBRATION_GATE_FLOOR_RMS = 0.00002;

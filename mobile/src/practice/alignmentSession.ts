@@ -20,9 +20,8 @@ export type SessionStatus = 'connecting' | 'preparing' | 'waiting' | 'streaming'
 export interface SessionCallbacks {
   onStatus: (status: SessionStatus) => void;
   onPosition: (quarter: number) => void;
-  onOfflinePath: (path: AlignmentPoint[]) => void;
-  // Each chunk actually sent (and kept for grading), as it's sent.
-  onRecorded?: (chunk: Float32Array) => void;
+  // takeId: the server keeps the take's audio for GET /api/take/<id> (absent from older servers).
+  onOfflinePath: (path: AlignmentPoint[], takeId: string | null) => void;
   onClosed: () => void;
   onError: (message: string) => void;
 }
@@ -173,7 +172,6 @@ export class AlignmentSession {
     this.socket.send(chunk.buffer as ArrayBuffer);
     this.recorded.push(chunk);
     this.chunksSent += 1;
-    this.callbacks.onRecorded?.(chunk);
   }
 
   seek(quarter: number): boolean {
@@ -220,7 +218,10 @@ export class AlignmentSession {
   private handleMessage(raw: string): void {
     const message = JSON.parse(raw);
     if (message.type === 'offlineAlignment' && Array.isArray(message.path)) {
-      this.callbacks.onOfflinePath(message.path.map(([perfTimeSeconds, quarter]: [number, number]) => ({ perfTimeSeconds, quarter })));
+      this.callbacks.onOfflinePath(
+        message.path.map(([perfTimeSeconds, quarter]: [number, number]) => ({ perfTimeSeconds, quarter })),
+        typeof message.takeId === 'string' ? message.takeId : null,
+      );
       return;
     }
     if (typeof message.quarter === 'number') {

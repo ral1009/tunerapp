@@ -42,13 +42,13 @@ export type EngineCommand =
   | { type: "correct"; corrections: NoteXmlCorrection[] }
   // Post-take grading (practice/offlineIntonationScorer). Runs here rather than in the app because
   // the page's JavaScript engine has a JIT and its own thread; the app's (Hermes) has neither, and
-  // grading there froze the phone for most of a minute. The take's audio arrives in pieces while
-  // it's being played, as 16-bit PCM in base64 (grading is unchanged at 16 bits: see "Download this
-  // take" in CLAUDE.md); "grade" at the end joins them, runs the scorer and answers "graded".
-  | { type: "gradeAudio"; id: string; pcm16: string }
+  // grading there froze the phone. The take's audio is fetched straight from the alignment server
+  // (GET /api/take/<id>: raw float32, exactly the samples the app sent), so the phone never
+  // re-encodes or forwards it; "graded" answers with the per-note records.
   | {
       type: "grade";
       id: string;
+      audioUrl: string;
       path: AlignmentPoint[];
       notes: CursorNoteInfo[];
       quarterIndex: QuarterIndexEntry[];

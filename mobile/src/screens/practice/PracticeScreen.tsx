@@ -11,6 +11,7 @@ import { useLibrary } from '@/data/libraryStore';
 import { useTakes } from '@/data/takesStore';
 import { highlightsFor } from '@/practice/grading';
 import { createEngineGrader } from '@/practice/engineGrader';
+import { probeRender } from '@/practice/perfProbe';
 import { usePractice, type PracticeResult } from '@/practice/usePractice';
 import { ScoreView, type ScoreViewHandle } from '@/score/ScoreView';
 import { useScoreTheme, useSettings, type LayoutMode } from '@/theme/settings';
@@ -32,6 +33,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
   const [jumping, setJumping] = useState(false);
   const [jumpInput, setJumpInput] = useState('');
   const [jumpMessage, setJumpMessage] = useState<string | null>(null);
+  probeRender();
   const region = fromBar && toBar ? { fromBar: Math.min(fromBar, toBar), toBar: Math.max(fromBar, toBar) } : null;
 
   // Grading runs in the score engine's page (its own thread, with a JIT), not on the app's thread.
@@ -65,7 +67,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
     strictness: settings.strictness,
     moveCursor,
     onTake,
-    grader: grader.grader,
+    grader: grader.grade,
   });
 
   // A whole-piece take goes straight to its review.

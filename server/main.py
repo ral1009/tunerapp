@@ -16,7 +16,9 @@ from typing import Any
 
 from fastapi import FastAPI, File, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from collections import OrderedDict
+
+from fastapi.responses import JSONResponse, Response
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 import xml.etree.ElementTree as ET
 
@@ -50,7 +52,7 @@ app.add_middleware(
     # permissive across localhost/127.0.0.1/any private-LAN IP on Vite's dev port since this
     # server is local-dev-only, not deployed. Also the native app's web build (Expo on :8081, plain
     # http); the native iOS/Android app itself sends no Origin and needs no allowance.
-    allow_origin_regex=r"(https://(localhost|127\.0\.0\.1|(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.[\d.]+):5173)|(http://(localhost|127\.0\.0\.1|(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.[\d.]+):8081)",
+    allow_origin_regex=r"(null)|(https://(localhost|127\.0\.0\.1|(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.[\d.]+):5173)|(http://(localhost|127\.0\.0\.1|(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.[\d.]+):8081)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -137,6 +139,22 @@ def _extract_notes_from_musicxml(xml_path: Path) -> list[dict[str, Any]]:
         })
 
     return notes
+
+
+# Recent takes' audio (raw float32, the samples the client sent), so the app's score engine can
+# fetch a take for post-take grading straight from here instead of the phone re-encoding and
+# forwarding every second of it -- on a phone without a JIT that hand-over alone was a few percent
+# of the thread on top of everything else. Kept only for the last few takes.
+RECENT_TAKES: "OrderedDict[str, bytes]" = OrderedDict()
+RECENT_TAKES_KEPT = 6
+
+
+@app.get("/api/take/{take_id}")
+async def get_take(take_id: str) -> Response:
+    audio = RECENT_TAKES.get(take_id)
+    if audio is None:
+        return JSONResponse(status_code=404, content={"error": "No such take (only the last few are kept)."})
+    return Response(content=audio, media_type="application/octet-stream")
 
 
 @app.post("/api/parse-sheet")
@@ -384,8 +402,12 @@ async def align(websocket: WebSocket) -> None:
                 logger.exception("Alignment session %s: offline alignment failed", session_id[:8])
                 points = []
             if points and websocket.client_state == WebSocketState.CONNECTED:
+                take_id = uuid.uuid4().hex
+                RECENT_TAKES[take_id] = b"".join(aligner._recorded_chunks)
+                while len(RECENT_TAKES) > RECENT_TAKES_KEPT:
+                    RECENT_TAKES.popitem(last=False)
                 await websocket.send_json(
-                    {"type": "offlineAlignment", "path": [[t, q] for t, q in points]}
+                    {"type": "offlineAlignment", "path": [[t, q] for t, q in points], "takeId": take_id}
                 )
     except WebSocketDisconnect:
         logger.info("Alignment session %s disconnected", session_id[:8])

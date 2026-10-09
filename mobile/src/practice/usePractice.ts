@@ -18,7 +18,9 @@ import type { MicStatus } from '@/audio/micTypes';
 
 import { AlignmentSession, type SessionStatus } from './alignmentSession';
 import { probeChunk, probeSection, startProbe } from './perfProbe';
-import { inProcessGrader, type Grader, type TakeUpload } from './engineGrader';
+import { serverUrl } from '@/config/server';
+
+import type { Grader } from './engineGrader';
 
 // Matches DEFAULT_MATCHMAKER_FOLLOWER_CONFIG and the web app's post-take scoring config, so a take
 // on the phone is graded exactly like one in the browser.
@@ -37,6 +39,9 @@ const JUMP_SETTLE_MS = 400;
 // The server's post-take reply normally takes well under a second; this only guards a failure.
 const OFFLINE_TIMEOUT_MS = 15000;
 const SPOT_PASS_END_PAUSE_MS = 1200;
+// The live note under the score: 8 readings a second is smooth to read and half the cost of 16
+// (measured with the JIT off: the readout was ~12% of the thread at 16/s while playing).
+const LIVE_READOUT_INTERVAL_MS = 125;
 const SPOT_NEXT_PASS_DELAY_MS = 1500;
 
 export type PracticePhase = 'loading' | 'connecting' | 'preparing' | 'ready' | 'playing' | 'scoring' | 'between' | 'done' | 'error';
@@ -91,7 +96,6 @@ export function usePractice(options: PracticeOptions) {
   const passCountRef = useRef(0);
   const beginTakeRef = useRef<() => void>(() => undefined);
   const noiseFloorRef = useRef<number | undefined>(undefined);
-  const uploadRef = useRef<TakeUpload | null>(null);
   useEffect(() => {
     optionsRef.current = options;
   });
@@ -104,7 +108,7 @@ export function usePractice(options: PracticeOptions) {
   }, []);
 
   // ---- scoring -----------------------------------------------------------------------------------
-  const scoreTake = useCallback(async (session: AlignmentSession, path: AlignmentPoint[] | null) => {
+  const scoreTake = useCallback(async (session: AlignmentSession, path: AlignmentPoint[] | null, takeId: string | null = null) => {
     const o = optionsRef.current;
     if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current);
     offlineTimerRef.current = null;
@@ -130,9 +134,8 @@ export function usePractice(options: PracticeOptions) {
     };
     let records: NoteAccuracyRecord[];
     try {
-      const upload = uploadRef.current;
-      records = upload
-        ? await upload.grade({ path, notes: o.notes, quarterIndex: o.quarterIndex, setup, config: SCORING_CONFIG, onProgress: (f) => setProgress(f) })
+      records = o.grader && takeId
+        ? await o.grader({ audioUrl: `${serverUrl()}/api/take/${takeId}`, path, notes: o.notes, quarterIndex: o.quarterIndex, setup, config: SCORING_CONFIG, onProgress: (f) => setProgress(f) })
         : await scoreRecordingOffline(session.recordedAudio(), path, o.notes, o.quarterIndex, setup, SCORING_CONFIG, (f) => setProgress(f));
     } catch (e) {
       setError(`The take couldn’t be graded: ${e instanceof Error ? e.message : String(e)}`);
@@ -161,10 +164,7 @@ export function usePractice(options: PracticeOptions) {
     const previous = sessionRef.current;
     if (previous?.noiseFloorRms !== undefined) noiseFloorRef.current = previous.noiseFloorRms;
     previous?.stop();
-    const upload = (optionsRef.current.grader ?? inProcessGrader).startTake();
-    uploadRef.current = upload;
     const session = new AlignmentSession({
-      onRecorded: (chunk) => upload.append(chunk),
       onStatus: (status) => {
         setSessionStatus(status);
         if (status === 'streaming') setPhase('playing');
@@ -181,7 +181,7 @@ export function usePractice(options: PracticeOptions) {
           setCurrentStep(step);
         }
       },
-      onOfflinePath: (path) => void scoreTake(session, path),
+      onOfflinePath: (path, takeId) => void scoreTake(session, path, takeId),
       onClosed: () => undefined,
       onError: (message) => {
         setError(message);
@@ -237,7 +237,7 @@ export function usePractice(options: PracticeOptions) {
 
   // Live note for the readout, from the same microphone.
   useEffect(() => {
-    tunerRef.current = new LiveTuner((reading) => setLiveHz(reading.frequencyHz));
+    tunerRef.current = new LiveTuner((reading) => setLiveHz(reading.frequencyHz), LIVE_READOUT_INTERVAL_MS);
     return () => {
       tunerRef.current = null;
     };
