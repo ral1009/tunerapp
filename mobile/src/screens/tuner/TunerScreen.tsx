@@ -1,7 +1,7 @@
 import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
 
 import { frequencyOf, IN_TUNE_CENTS, nearestNote, tuningAdvice } from '@/audio/notes';
-import { currentStringCents, useTuner } from '@/audio/useTuner';
+import { currentStringCents, useTuner, useTunerLive, type TunerState } from '@/audio/useTuner';
 import { NavBar } from '@/components/nav';
 import { Display, IntonationScale, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { useSettings, type LayoutMode } from '@/theme/settings';
@@ -13,8 +13,27 @@ export function TunerScreen({ layout }: { layout: LayoutMode }) {
   const { settings } = useSettings();
   const a4 = settings.referencePitchHz;
   const tuner = useTuner(a4);
-  const { reading, heldHz, micStatus, micError, restart, strings, currentString: current } = tuner;
-  const currentCents = currentStringCents(tuner, a4);
+  // The frame (wood, header, navigation) renders once; only TunerLive redraws with each reading.
+  return (
+    <Screen layout={layout} edges={tablet ? ['top', 'bottom'] : ['top']} glow={false}>
+      <Wood variant="dim" style={StyleSheet.absoluteFill} />
+      <View style={{ flex: 1, paddingHorizontal: g }}>
+        <View style={[styles.header, tablet && styles.headerTablet]}>
+          {tablet ? <Display size={64}>Tuner</Display> : <Text style={styles.eyebrow}>Tuner</Text>}
+          {tablet ? <NavBar current="tuner" layout="tablet" /> : <Text style={styles.ref}>A = {a4} Hz</Text>}
+        </View>
+        <TunerLive tuner={tuner} a4={a4} tablet={tablet} />
+      </View>
+      {tablet ? null : <NavBar current="tuner" layout="phone" />}
+    </Screen>
+  );
+}
+
+function TunerLive({ tuner, a4, tablet }: { tuner: TunerState; a4: number; tablet: boolean }) {
+  const { micStatus, micError, restart } = tuner;
+  const snap = useTunerLive(tuner.live);
+  const { reading, heldHz, strings, currentString: current } = snap;
+  const currentCents = currentStringCents(snap, a4);
 
   // Show the open string when one is being tuned; otherwise whatever note is sounding.
   const note = heldHz ? nearestNote(heldHz, a4) : null;
@@ -57,36 +76,27 @@ export function TunerScreen({ layout }: { layout: LayoutMode }) {
   );
 
   return (
-    <Screen layout={layout} edges={tablet ? ['top', 'bottom'] : ['top']} glow={false}>
-      <Wood variant="dim" style={StyleSheet.absoluteFill} />
-      <View style={{ flex: 1, paddingHorizontal: g }}>
-        <View style={[styles.header, tablet && styles.headerTablet]}>
-          {tablet ? <Display size={64}>Tuner</Display> : <Text style={styles.eyebrow}>Tuner</Text>}
-          {tablet ? <NavBar current="tuner" layout="tablet" /> : <Text style={styles.ref}>A = {a4} Hz</Text>}
+    <>
+      <View style={styles.centre}>
+        <Text style={styles.stringLabel}>{stringLabel}</Text>
+        <Display size={tablet ? 260 : 220} style={{ lineHeight: tablet ? 250 : 210, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 40 }}>{letter}</Display>
+        <Text style={styles.hz}>{hzLine}</Text>
+        <Text style={styles.cents}>
+          {shownCents === null ? ' ' : `${shownCents > 0 ? '+' : shownCents < 0 ? '−' : ''}${Math.abs(Math.round(shownCents))}¢`}
+          <Text style={styles.advice}>{shownCents === null ? status : `  ${status}`}</Text>
+        </Text>
+        <View style={{ width: tablet ? 520 : '100%', marginTop: 22 }}>
+          <IntonationScale cents={shownCents} />
         </View>
-
-        <View style={styles.centre}>
-          <Text style={styles.stringLabel}>{stringLabel}</Text>
-          <Display size={tablet ? 260 : 220} style={{ lineHeight: tablet ? 250 : 210, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 40 }}>{letter}</Display>
-          <Text style={styles.hz}>{hzLine}</Text>
-          <Text style={styles.cents}>
-            {shownCents === null ? ' ' : `${shownCents > 0 ? '+' : shownCents < 0 ? '−' : ''}${Math.abs(Math.round(shownCents))}¢`}
-            <Text style={styles.advice}>{shownCents === null ? status : `  ${status}`}</Text>
-          </Text>
-          <View style={{ width: tablet ? 520 : '100%', marginTop: 22 }}>
-            <IntonationScale cents={shownCents} />
-          </View>
-          {micStatus === 'denied' && Platform.OS !== 'web' ? <TextButton label="Open settings" tone="gold" onPress={() => Linking.openSettings()} /> : null}
-          {micStatus === 'error' ? <TextButton label="Try again" tone="gold" onPress={restart} /> : null}
-        </View>
-
-        <View style={{ paddingBottom: tablet ? 40 : 10 }}>
-          {stringsRow}
-          <Text style={styles.summary}>{summary}</Text>
-        </View>
+        {micStatus === 'denied' && Platform.OS !== 'web' ? <TextButton label="Open settings" tone="gold" onPress={() => Linking.openSettings()} /> : null}
+        {micStatus === 'error' ? <TextButton label="Try again" tone="gold" onPress={restart} /> : null}
       </View>
-      {tablet ? null : <NavBar current="tuner" layout="phone" />}
-    </Screen>
+
+      <View style={{ paddingBottom: tablet ? 40 : 10 }}>
+        {stringsRow}
+        <Text style={styles.summary}>{summary}</Text>
+      </View>
+    </>
   );
 }
 

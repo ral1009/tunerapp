@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { IN_TUNE_CENTS, nearestNote } from '@/audio/notes';
-import { useTuner } from '@/audio/useTuner';
+import { useTuner, useTunerLive, type TunerState } from '@/audio/useTuner';
 import { BackLink, Display, Eyebrow, GoldButton, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
@@ -24,7 +24,28 @@ export function MicCheckScreen({ layout }: { layout: LayoutMode }) {
   const g = useGutter(layout);
   const { settings } = useSettings();
   const a4 = settings.referencePitchHz;
-  const { reading, heldHz, micStatus, strings, peakSignalRatio: peakRatio, levels } = useTuner(a4);
+  const tuner = useTuner(a4);
+  // The frame renders once; MicLive redraws with each reading.
+  return (
+    <Screen layout={layout} edges={['bottom']} glow={false}>
+      <ScrollView contentContainerStyle={{ flexGrow: 1, paddingBottom: 28 }}>
+        <Wood variant="hero" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: tablet ? 460 : 380 }} />
+        <View style={{ paddingLeft: g - 10, paddingTop: 52 }}>
+          <BackLink label="Back" tone="light" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
+        </View>
+        <View style={{ paddingHorizontal: g, marginTop: tablet ? 90 : 64, gap: 10, maxWidth: 640 }}>
+          <Eyebrow tone="bright">Microphone</Eyebrow>
+          <Display size={tablet ? 60 : 44} style={{ lineHeight: tablet ? 62 : 46 }}>Let&rsquo;s hear your violin</Display>
+        </View>
+        <MicLive tuner={tuner} a4={a4} g={g} tablet={tablet} />
+      </ScrollView>
+    </Screen>
+  );
+}
+
+function MicLive({ tuner, a4, g, tablet }: { tuner: TunerState; a4: number; g: number; tablet: boolean }) {
+  const { micStatus } = tuner;
+  const { reading, heldHz, strings, peakSignalRatio: peakRatio, levels } = useTunerLive(tuner.live);
 
   const calibrating = micStatus !== 'running' || reading.status === 'calibrating';
   const quiet = !calibrating && reading.noiseFloorRms < QUIET_ROOM_RMS;
@@ -58,17 +79,7 @@ export function MicCheckScreen({ layout }: { layout: LayoutMode }) {
   const active = steps.findIndex((st) => !st.done);
 
   return (
-    <Screen layout={layout} edges={['bottom']} glow={false}>
-      <ScrollView contentContainerStyle={{ flexGrow: 1, paddingBottom: 28 }}>
-        <Wood variant="hero" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: tablet ? 460 : 380 }} />
-        <View style={{ paddingLeft: g - 10, paddingTop: 52 }}>
-          <BackLink label="Back" tone="light" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
-        </View>
-        <View style={{ paddingHorizontal: g, marginTop: tablet ? 90 : 64, gap: 10, maxWidth: 640 }}>
-          <Eyebrow tone="bright">Microphone</Eyebrow>
-          <Display size={tablet ? 60 : 44} style={{ lineHeight: tablet ? 62 : 46 }}>Let&rsquo;s hear your violin</Display>
-        </View>
-
+    <>
         <View style={{ paddingHorizontal: g, marginTop: 30 }}>
           <View style={{ height: meterHeight, flexDirection: 'row', alignItems: 'flex-end', gap: 3 }} accessible accessibilityLabel={note ? 'Hearing your violin' : 'Microphone level'}>
             {Array.from({ length: 48 }, (_, i) => {
@@ -101,8 +112,7 @@ export function MicCheckScreen({ layout }: { layout: LayoutMode }) {
           <TextButton label="Skip" href="/add-music" />
           <GoldButton label={heard.length ? 'Sounds good' : 'Skip for now'} href="/add-music" />
         </View>
-      </ScrollView>
-    </Screen>
+    </>
   );
 }
 

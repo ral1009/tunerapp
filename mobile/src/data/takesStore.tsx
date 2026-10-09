@@ -69,8 +69,28 @@ export function useTakes(): TakesValue {
 }
 
 // In-tune share of the notes that were graded, as a whole percentage (null if nothing graded).
+// A take's records never change, so its grades for a given reference and strictness are worked
+// out once and remembered: the library, piece and review screens used to regrade every take on
+// every render, which adds up on a phone (no JIT) as takes accumulate.
+const gradeCache = new WeakMap<readonly unknown[], Map<string, ReturnType<typeof gradeTake>>>();
+
+export function gradedTake(take: Take, reference: GradeReference, strictness: GradeStrictness): ReturnType<typeof gradeTake> {
+  let byOptions = gradeCache.get(take.records);
+  if (!byOptions) {
+    byOptions = new Map();
+    gradeCache.set(take.records, byOptions);
+  }
+  const key = `${reference}/${strictness}`;
+  let result = byOptions.get(key);
+  if (!result) {
+    result = gradeTake(take.records, gradingOptions(reference, strictness));
+    byOptions.set(key, result);
+  }
+  return result;
+}
+
 export function takeScore(take: Take, reference: GradeReference, strictness: GradeStrictness): number | null {
-  const graded = gradeTake(take.records, gradingOptions(reference, strictness)).records.filter(
+  const graded = gradedTake(take, reference, strictness).records.filter(
     (r) => r.verdict === 'in_tune' || r.verdict === 'close' || r.verdict === 'out_of_tune',
   );
   if (graded.length === 0) return null;

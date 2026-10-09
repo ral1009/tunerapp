@@ -6,8 +6,7 @@ import type { EngineEvent, ScoreMeta } from '@core/score/engine/protocol';
 
 import { Arrow, BackLink, Body, Display, Eyebrow, GoldButton, Screen, Serif, useGutter, Wood } from '@/components/ui';
 import { useLibrary } from '@/data/libraryStore';
-import { takeScore, useTakes } from '@/data/takesStore';
-import { gradeTake, gradingOptions } from '@core/practice/reviewSummary';
+import { gradedTake, takeScore, useTakes } from '@/data/takesStore';
 import { useSettings } from '@/theme/settings';
 import { ScoreView } from '@/score/ScoreView';
 import { useScoreTheme, type LayoutMode } from '@/theme/settings';
@@ -64,7 +63,7 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
   // Per bar, across every take: how often it had a note out of tune or close.
   const trouble = new Array<number>(piece.measureCount).fill(-1);
   for (const take of takes) {
-    for (const r of gradeTake(take.records, gradingOptions(settings.reference, settings.strictness)).records) {
+    for (const r of gradedTake(take, settings.reference, settings.strictness).records) {
       const bar = r.measureIndex;
       if (bar < 0 || bar >= trouble.length || r.verdict === 'not_played') continue;
       if (trouble[bar] < 0) trouble[bar] = 0;

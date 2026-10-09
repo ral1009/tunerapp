@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+
+import { createLiveValue, type LiveValue } from '@/practice/liveValue';
 
 import { LiveTuner, type TunerReading } from './liveTuner';
 import type { MicStatus } from './micTypes';
@@ -10,6 +12,8 @@ const EMPTY: TunerReading = { status: 'calibrating', frequencyHz: null, confiden
 const HOLD_MS = 900;
 // How many recent levels the meter shows.
 const LEVEL_HISTORY = 48;
+// Same readout rate as practising (see liveTuner.ts / usePractice.ts): 8 a second, 3-reading median.
+const READOUT_INTERVAL_MS = 125;
 
 export interface StringState {
   name: string;
@@ -17,29 +21,41 @@ export interface StringState {
   cents: number | null; // last steady reading on this string
 }
 
-export interface TunerState {
+// Everything that changes with each reading, in one snapshot.
+export interface TunerSnapshot {
   reading: TunerReading;
   heldHz: number | null;
   strings: StringState[];
   currentString: number | null; // index into strings, when an open string is being played
   peakSignalRatio: number; // loudest pitched playing so far, as a multiple of the room's floor
   levels: number[]; // recent raw input levels, oldest first, for a level meter
+}
+
+export interface TunerState {
+  // Live readings live outside React state: screens read them through useTunerLive in the small
+  // components that show them, so a reading redraws those and not the whole screen.
+  live: LiveValue<TunerSnapshot>;
   micStatus: MicStatus;
   micError: string | null;
   restart: () => void;
 }
 
+const INITIAL: TunerSnapshot = {
+  reading: EMPTY,
+  heldHz: null,
+  strings: OPEN_STRINGS.map((s) => ({ ...s, cents: null })),
+  currentString: null,
+  peakSignalRatio: 0,
+  levels: [],
+};
+
 // Microphone + live pitch for the tuner and the mic check. Everything is worked out in the
 // microphone callback (not during render): the pitch, which open string it's nearest (within a
 // semitone and a half), and each string's last steady reading -- recorded once four consecutive
-// readings agree within 8 cents, so a slide through a string's pitch doesn't count.
+// readings agree within 8 cents, so a slide through a string's pitch doesn't count. One snapshot
+// update per reading (it used to be up to six separate state updates).
 export function useTuner(referenceA4: number): TunerState {
-  const [reading, setReading] = useState<TunerReading>(EMPTY);
-  const [heldHz, setHeldHz] = useState<number | null>(null);
-  const [strings, setStrings] = useState<StringState[]>(() => OPEN_STRINGS.map((s) => ({ ...s, cents: null })));
-  const [currentString, setCurrentString] = useState<number | null>(null);
-  const [peakSignalRatio, setPeakSignalRatio] = useState(0);
-  const [levels, setLevels] = useState<number[]>([]);
+  const [live] = useState(() => createLiveValue<TunerSnapshot>(INITIAL));
   const tunerRef = useRef<LiveTuner | null>(null);
   const referenceRef = useRef(referenceA4);
 
@@ -51,20 +67,21 @@ export function useTuner(referenceA4: number): TunerState {
     let lastPitchAt = 0;
     let recent: number[] = [];
     tunerRef.current = new LiveTuner((next) => {
-      setReading(next);
-      setLevels((prev) => [...prev.slice(-(LEVEL_HISTORY - 1)), next.rms]);
+      const prev = live.get();
+      const snap: TunerSnapshot = { ...prev, reading: next, levels: [...prev.levels.slice(-(LEVEL_HISTORY - 1)), next.rms] };
       const now = Date.now();
       if (!next.frequencyHz) {
         recent = [];
         if (now - lastPitchAt > HOLD_MS) {
-          setHeldHz(null);
-          setCurrentString(null);
+          snap.heldHz = null;
+          snap.currentString = null;
         }
+        live.set(snap);
         return;
       }
       lastPitchAt = now;
-      setHeldHz(next.frequencyHz);
-      if (next.noiseFloorRms > 0) setPeakSignalRatio((p) => Math.max(p, next.rms / next.noiseFloorRms));
+      snap.heldHz = next.frequencyHz;
+      if (next.noiseFloorRms > 0) snap.peakSignalRatio = Math.max(prev.peakSignalRatio, next.rms / next.noiseFloorRms);
 
       const a4 = referenceRef.current;
       let best = -1;
@@ -76,22 +93,22 @@ export function useTuner(referenceA4: number): TunerState {
           bestCents = c;
         }
       });
-      setCurrentString(best < 0 ? null : best);
+      snap.currentString = best < 0 ? null : best;
       if (best < 0) {
         recent = [];
-        return;
+      } else {
+        recent = [...recent.slice(-3), bestCents];
+        if (recent.length === 4 && Math.max(...recent) - Math.min(...recent) < 8) {
+          const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
+          snap.strings = prev.strings.map((s, i) => (i === best ? { ...s, cents: mean } : s));
+        }
       }
-      recent = [...recent.slice(-3), bestCents];
-      if (recent.length === 4 && Math.max(...recent) - Math.min(...recent) < 8) {
-        const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
-        const index = best;
-        setStrings((prev) => prev.map((s, i) => (i === index ? { ...s, cents: mean } : s)));
-      }
-    });
+      live.set(snap);
+    }, READOUT_INTERVAL_MS);
     return () => {
       tunerRef.current = null;
     };
-  }, []);
+  }, [live]);
 
   const mic = useMic(useCallback((chunk) => tunerRef.current?.push(chunk.samples, chunk.sampleRate), []));
   const { start, stop } = mic;
@@ -103,14 +120,22 @@ export function useTuner(referenceA4: number): TunerState {
 
   const restart = useCallback(() => {
     tunerRef.current?.reset();
+    live.set(INITIAL);
     stop();
     void start();
-  }, [start, stop]);
+  }, [start, stop, live]);
 
-  return { reading, heldHz, strings, currentString, peakSignalRatio, levels, micStatus: mic.status, micError: mic.error, restart };
+  return { live, micStatus: mic.status, micError: mic.error, restart };
 }
 
-export function currentStringCents(state: TunerState, referenceA4: number): number | null {
+// Subscribe to the live tuner. With the default selector the caller redraws on every reading, so
+// use it only in the small components that show live values.
+export function useTunerLive<T = TunerSnapshot>(live: LiveValue<TunerSnapshot>, select?: (s: TunerSnapshot) => T): T {
+  const read = () => (select ? select(live.get()) : (live.get() as unknown as T));
+  return useSyncExternalStore(live.subscribe, read, read);
+}
+
+export function currentStringCents(state: Pick<TunerSnapshot, 'currentString' | 'heldHz'>, referenceA4: number): number | null {
   if (state.currentString === null || state.heldHz === null) return null;
   return centsFrom(state.heldHz, OPEN_STRINGS[state.currentString].midi, referenceA4);
 }
