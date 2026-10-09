@@ -17,6 +17,7 @@ import { useMic } from '@/audio/useMic';
 import type { MicStatus } from '@/audio/micTypes';
 
 import { AlignmentSession, type SessionStatus } from './alignmentSession';
+import { probeChunk, probeSection, startProbe } from './perfProbe';
 import { inProcessGrader, type Grader, type TakeUpload } from './engineGrader';
 
 // Matches DEFAULT_MATCHMAKER_FOLLOWER_CONFIG and the web app's post-take scoring config, so a take
@@ -200,8 +201,10 @@ export function usePractice(options: PracticeOptions) {
     beginTakeRef.current = () => void beginTake();
   }, [beginTake]);
 
-  const onChunk = useCallback((chunk: { samples: Float32Array; sampleRate: number }) => {
-    tunerRef.current?.push(chunk.samples, chunk.sampleRate);
+  useEffect(() => startProbe(), []);
+
+  const onChunk = useCallback((chunk: { samples: Float32Array; sampleRate: number }) => probeChunk(() => {
+    probeSection('tuner', () => tunerRef.current?.push(chunk.samples, chunk.sampleRate));
     const session = sessionRef.current;
     if (!session) return;
     if (!connectingRef.current) {
@@ -226,8 +229,8 @@ export function usePractice(options: PracticeOptions) {
         });
       return;
     }
-    session.push(chunk.samples);
-  }, [resolvedRegion]);
+    probeSection('send', () => session.push(chunk.samples));
+  }, chunk.samples.length), [resolvedRegion]);
 
   const mic = useMic(onChunk);
   const { start: startMic, stop: stopMic } = mic;
