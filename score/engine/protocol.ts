@@ -5,6 +5,7 @@
 
 import type { ScoreMeasureIssue } from "../schema";
 import type { CursorNoteInfo, NoteHighlight, QuarterIndexEntry } from "../renderer/scoreCursor";
+import type { NoteXmlCorrection } from "../correctionUI/noteXmlCorrection";
 
 export type ScoreTheme = "paper" | "ebony";
 
@@ -34,11 +35,14 @@ export type EngineCommand =
   | { type: "highlight"; highlights: NoteHighlight[] }
   // Bars drawn as selected (spot practice); null clears. Tapping bars is reported either way.
   | { type: "selectBars"; from: number | null; to: number | null }
-  | { type: "scrollToBar"; measureIndex: number };
+  | { type: "scrollToBar"; measureIndex: number }
+  // Fix misread notes: patches the MusicXML, re-reads and redraws, and reports the new XML.
+  | { type: "correct"; corrections: NoteXmlCorrection[] };
 
 export type EngineEvent =
   | { type: "ready" }
   | { type: "loaded"; meta: ScoreMeta; notes: CursorNoteInfo[]; quarterIndex: QuarterIndexEntry[]; rendered: boolean }
   | { type: "barTap"; measureIndex: number }
   | { type: "cursorMoved"; stepIndex: number | null }
+  | { type: "xmlChanged"; xml: string; meta: ScoreMeta; notes: CursorNoteInfo[]; quarterIndex: QuarterIndexEntry[] }
   | { type: "error"; message: string };

@@ -1,5 +1,9 @@
-import { ComingNext } from '@/components/ComingNext';
+import { useLocalSearchParams } from 'expo-router';
 
-export default function Route() {
-  return <ComingNext title="Check a bar" note="Fix a note the photo reading got wrong." />;
+import { FixBarScreen } from '@/screens/fixBar/FixBarScreen';
+import { useLayoutMode } from '@/theme/settings';
+
+export default function FixBarRoute() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  return <FixBarScreen layout={useLayoutMode()} id={id} />;
 }

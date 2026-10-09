@@ -6,6 +6,7 @@
 // window "message" event (iframe in the web build). Messages out: ReactNativeWebView.postMessage
 // when present, else parent.postMessage. See protocol.ts.
 
+import { applyNoteCorrectionsToXml } from "../correctionUI/noteXmlCorrection";
 import { importMusicXmlToScore } from "../musicxmlImport";
 import { renderScore, type RenderedScoreHandle } from "../renderer";
 import type { EngineCommand, EngineEvent, ScoreTheme } from "./protocol";
@@ -31,6 +32,9 @@ function send(event: EngineEvent): void {
 const host = document.getElementById("score") as HTMLDivElement;
 const overlay = document.getElementById("overlay") as HTMLDivElement;
 let handle: RenderedScoreHandle | null = null;
+// Built once per render: buildQuarterIndex walks the whole score and resets the cursor, far too
+// heavy for every position update during practice (up to 30 a second).
+let quarterIndexCache: ReturnType<RenderedScoreHandle["cursor"]["buildQuarterIndex"]> = [];
 let currentXml = "";
 let currentTheme: ScoreTheme = "paper";
 let selection: { from: number; to: number } | null = null;
@@ -52,6 +56,7 @@ async function render(): Promise<void> {
     composerOverride: composerForRender || undefined,
     musicColor: THEMES[currentTheme].ink
   });
+  quarterIndexCache = handle.cursor.buildQuarterIndex();
   drawSelection();
 }
 
@@ -84,18 +89,7 @@ async function receive(command: EngineCommand): Promise<void> {
       case "load": {
         currentXml = command.xml;
         applyTheme(command.theme);
-        const score = await importMusicXmlToScore(command.xml);
-        titleForRender = score.title;
-        composerForRender = score.composer;
-        const meta = {
-          title: score.title,
-          composer: score.composer,
-          measureCount: score.measures.length,
-          keySignature: score.keySignature,
-          timeSignature: score.timeSignature,
-          tempoBpm: score.tempoBpm,
-          measureIssues: score.measureIssues ?? []
-        };
+        const meta = await readMeta(command.xml);
         if (!command.render) {
           send({ type: "loaded", meta, notes: [], quarterIndex: [], rendered: false });
           return;
@@ -103,7 +97,7 @@ async function receive(command: EngineCommand): Promise<void> {
         await render();
         const cursor = (handle as RenderedScoreHandle).cursor;
         const notes = cursor.listNotes();
-        const quarterIndex = cursor.buildQuarterIndex();
+        const quarterIndex = quarterIndexCache;
         send({ type: "loaded", meta, notes, quarterIndex, rendered: true });
         return;
       }
@@ -119,8 +113,8 @@ async function receive(command: EngineCommand): Promise<void> {
         return;
       case "seek": {
         if (!handle) return;
-        const index = handle.cursor.buildQuarterIndex();
-        const landed = handle.cursor.seekToQuarter(index, command.quarter);
+        const landed = handle.cursor.seekToQuarter(quarterIndexCache, command.quarter);
+        keepCursorInView();
         send({ type: "cursorMoved", stepIndex: landed?.stepIndex ?? null });
         return;
       }
@@ -132,6 +126,14 @@ async function receive(command: EngineCommand): Promise<void> {
         selection = command.from === null || command.to === null ? null : { from: Math.min(command.from, command.to), to: Math.max(command.from, command.to) };
         drawSelection();
         return;
+      case "correct": {
+        currentXml = applyNoteCorrectionsToXml(currentXml, command.corrections);
+        const meta = await readMeta(currentXml);
+        await render();
+        const cursor = (handle as RenderedScoreHandle).cursor;
+        send({ type: "xmlChanged", xml: currentXml, meta, notes: cursor.listNotes(), quarterIndex: quarterIndexCache });
+        return;
+      }
       case "scrollToBar": {
         const box = handle?.getMeasureBoxes().find((b) => b.measureIndex === command.measureIndex);
         if (box) window.scrollTo({ top: Math.max(0, box.top - 80), behavior: "smooth" });
@@ -141,6 +143,33 @@ async function receive(command: EngineCommand): Promise<void> {
   } catch (error) {
     send({ type: "error", message: error instanceof Error ? error.message : String(error) });
   }
+}
+
+// Like turning the page: when the cursor's line drifts out of the middle of the screen, bring it
+// back to about a third of the way down so the next line is visible too.
+function keepCursorInView(): void {
+  const cursorEl = document.querySelector<HTMLElement>("[id^='cursorImg']");
+  if (!cursorEl || cursorEl.style.display === "none") return;
+  const rect = cursorEl.getBoundingClientRect();
+  const viewport = window.innerHeight;
+  if (rect.top < viewport * 0.12 || rect.bottom > viewport * 0.85) {
+    window.scrollBy({ top: rect.top - viewport * 0.3, behavior: "smooth" });
+  }
+}
+
+async function readMeta(xml: string) {
+  const score = await importMusicXmlToScore(xml);
+  titleForRender = score.title;
+  composerForRender = score.composer;
+  return {
+    title: score.title,
+    composer: score.composer,
+    measureCount: score.measures.length,
+    keySignature: score.keySignature,
+    timeSignature: score.timeSignature,
+    tempoBpm: score.tempoBpm,
+    measureIssues: score.measureIssues ?? []
+  };
 }
 
 window.__scoreEngine = { receive: (command) => void receive(command) };

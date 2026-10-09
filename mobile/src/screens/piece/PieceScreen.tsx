@@ -1,11 +1,14 @@
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { EngineEvent, ScoreMeta } from '@core/score/engine/protocol';
 
 import { Body, Display, Eyebrow, GoldButton, Rule, Screen, Serif, TextButton, useGutter } from '@/components/ui';
 import { useLibrary } from '@/data/libraryStore';
+import { takeScore, useTakes } from '@/data/takesStore';
+import { gradeTake, gradingOptions } from '@core/practice/reviewSummary';
+import { useSettings } from '@/theme/settings';
 import { ScoreView } from '@/score/ScoreView';
 import { useScoreTheme, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
@@ -18,6 +21,8 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
   const theme = useScoreTheme();
   const [meta, setMeta] = useState<ScoreMeta | null>(null);
   const { update } = library;
+  const { settings } = useSettings();
+  const takes = useTakes().forPiece(id);
 
   // Opening a piece makes it the one "Continue" offers.
   useEffect(() => {
@@ -70,13 +75,72 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
     </View>
   ) : null;
 
-  const takes = (
-    <View>
+  // Oldest to newest whole-piece scores, for the progress line.
+  const wholeScores = takes
+    .filter((t) => !t.region)
+    .map((t) => takeScore(t, settings.reference, settings.strictness))
+    .filter((v): v is number => v !== null)
+    .reverse()
+    .slice(-6);
+  // Per bar, across every take: how often it had a note out of tune or close.
+  const trouble = new Array<number>(piece.measureCount).fill(-1);
+  for (const take of takes) {
+    for (const r of gradeTake(take.records, gradingOptions(settings.reference, settings.strictness)).records) {
+      const bar = r.measureIndex;
+      if (bar < 0 || bar >= trouble.length || r.verdict === 'not_played') continue;
+      if (trouble[bar] < 0) trouble[bar] = 0;
+      if (r.verdict === 'out_of_tune') trouble[bar] += 2;
+      else if (r.verdict === 'close') trouble[bar] += 1;
+    }
+  }
+  const troubleColor = (v: number) => (v < 0 ? '#1E1813' : v >= Math.max(3, takes.length * 2) ? '#E06A55' : v > 0 ? '#B88A3E' : '#3A2E24');
+
+  const takesBlock = (
+    <View style={{ gap: 6 }}>
+      {wholeScores.length ? (
+        <View style={{ marginBottom: 14 }}>
+          <Eyebrow tone="muted">In tune, take by take</Eyebrow>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+            {wholeScores.map((v, i) => (
+              <Text key={i} style={i === wholeScores.length - 1 ? styles.scoreLast : styles.scoreOld}>{v}%</Text>
+            ))}
+          </View>
+        </View>
+      ) : null}
+      {takes.length ? (
+        <View style={{ marginBottom: 14 }}>
+          <Eyebrow tone="muted">Where the trouble is</Eyebrow>
+          <View style={{ flexDirection: 'row', gap: 1, height: 26, marginTop: 10 }}>
+            {trouble.map((v, i) => (
+              <View key={i} style={{ flex: 1, backgroundColor: troubleColor(v) }} />
+            ))}
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+            <Text style={styles.small}>Bar 1</Text>
+            <Text style={styles.small}>Bar {piece.measureCount}</Text>
+          </View>
+        </View>
+      ) : null}
       <Eyebrow tone="muted">Takes</Eyebrow>
-      <View style={styles.emptyTakes}>
-        <Serif size={17} style={{ color: colors.cream }}>No takes yet</Serif>
-        <Body style={{ fontSize: 13 }}>Play it through once and your progress, and the bars that need work, will show here.</Body>
-      </View>
+      {takes.length === 0 ? (
+        <View style={styles.emptyTakes}>
+          <Serif size={17} style={{ color: colors.cream }}>No takes yet</Serif>
+          <Body style={{ fontSize: 13 }}>Play it through once and your progress, and the bars that need work, will show here.</Body>
+        </View>
+      ) : (
+        takes.slice(0, 8).map((t) => {
+          const v = takeScore(t, settings.reference, settings.strictness);
+          return (
+            <Pressable key={t.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/review', params: { takeId: t.id } })} style={styles.takeRow}>
+              <View style={{ flex: 1 }}>
+                <Serif size={16}>{new Date(t.at).toLocaleDateString([], { month: 'short', day: 'numeric' })}, {new Date(t.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Serif>
+                <Text style={styles.small}>{t.region ? `Loop, bars ${t.region.fromBar}–${t.region.toBar}` : 'Whole piece'}</Text>
+              </View>
+              <Display size={20}>{v === null ? '—' : `${v}%`}</Display>
+            </Pressable>
+          );
+        })
+      )}
     </View>
   );
 
@@ -104,7 +168,7 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
             <ScrollView style={{ width: 320, flexGrow: 0 }} contentContainerStyle={{ gap: 28 }}>
               {actions}
               {issueNote}
-              {takes}
+              {takesBlock}
             </ScrollView>
           </View>
         </View>
@@ -119,7 +183,7 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
         <View style={{ height: 300 }}>{score}</View>
         {actions}
         {issueNote}
-        {takes}
+        {takesBlock}
       </ScrollView>
     </Screen>
   );
@@ -134,5 +198,9 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', alignItems: 'center', gap: 24 },
   issue: { gap: 6, paddingVertical: 16, borderTopWidth: 1, borderBottomWidth: 1, borderColor: 'rgba(240,112,90,0.35)' },
   issueTitle: { fontFamily: fonts.serif, fontSize: 18, color: colors.out },
+  scoreOld: { fontFamily: fonts.serif, fontSize: 17, color: colors.muted },
+  scoreLast: { fontFamily: fonts.display, fontSize: 30, color: colors.ivory },
+  small: { fontFamily: fonts.sans, fontSize: 11, color: colors.faint },
+  takeRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.ruleSoft, minHeight: 52 },
   emptyTakes: { gap: 6, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.ruleSoft },
 });

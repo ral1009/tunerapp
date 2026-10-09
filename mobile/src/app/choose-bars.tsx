@@ -1,5 +1,9 @@
-import { ComingNext } from '@/components/ComingNext';
+import { useLocalSearchParams } from 'expo-router';
 
-export default function Route() {
-  return <ComingNext title="Which bars?" note="Tap the first bar and the last to loop a passage." />;
+import { ChooseBarsScreen } from '@/screens/chooseBars/ChooseBarsScreen';
+import { useLayoutMode } from '@/theme/settings';
+
+export default function ChooseBarsRoute() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  return <ChooseBarsScreen layout={useLayoutMode()} id={id} />;
 }

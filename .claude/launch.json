@@ -21,7 +21,9 @@
         "--app-dir",
         "C:/Users/Ryan/Documents/GitHub/tunerapp/server",
         "--port",
-        "8000"
+        "8000",
+        "--host",
+        "0.0.0.0"
       ],
       "port": 8000,
       "url": "http://localhost:8000"

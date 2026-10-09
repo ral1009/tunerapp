@@ -6,7 +6,7 @@ import { Body, Display, Eyebrow, GoldButton, Maple, PageThumb, Rule, Screen, Ser
 import { pageCaps, useLibrary } from '@/data/libraryStore';
 import { colors, fonts } from '@/theme/tokens';
 
-import { pieceSubtitle } from './LibraryPhone';
+import { pieceSubtitle, usePieceStatus } from './LibraryPhone';
 
 function greeting(): string {
   const hour = new Date().getHours();
@@ -16,6 +16,7 @@ function greeting(): string {
 export function LibraryTablet() {
   const g = useGutter('tablet');
   const { pieces, current } = useLibrary();
+  const status = usePieceStatus();
   return (
     <Screen layout="tablet">
       <ScrollView contentContainerStyle={{ paddingHorizontal: g, paddingBottom: 56 }}>
@@ -37,7 +38,7 @@ export function LibraryTablet() {
                   <Display size={46} numberOfLines={1}>{current.title}</Display>
                   <Serif size={19} style={{ color: colors.cream }}>{current.composer}</Serif>
                 </View>
-                <Body style={{ color: colors.cream }}>Not played yet · {current.measureCount} bars</Body>
+                <Body style={{ color: colors.cream }}>{status(current.id).score !== null ? `${status(current.id).score}% in tune on your last take` : 'Not played yet'} · {current.measureCount} bars</Body>
               </View>
               <View style={styles.continueActions}>
                 <TextButton label="Loop a passage" href={{ pathname: '/choose-bars', params: { id: current.id } }} />
@@ -55,7 +56,7 @@ export function LibraryTablet() {
                 <PageThumb caps={pageCaps(piece)} style={styles.thumb} />
                 <View style={styles.tileTitle}>
                   <Serif size={18} numberOfLines={1} style={{ flex: 1 }}>{piece.title}</Serif>
-                  <Display size={18} style={{ color: colors.gold }}>—</Display>
+                  <Display size={18} style={{ color: colors.gold }}>{status(piece.id).score === null ? '—' : `${status(piece.id).score}%`}</Display>
                 </View>
                 <Text style={styles.meta} numberOfLines={1}>{pieceSubtitle(piece)}</Text>
               </Pressable>

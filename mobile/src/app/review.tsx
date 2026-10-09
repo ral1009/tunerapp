@@ -1,5 +1,9 @@
-import { ComingNext } from '@/components/ComingNext';
+import { useLocalSearchParams } from 'expo-router';
 
-export default function Route() {
-  return <ComingNext title="After the take" note="Coloured notes and the spots worth your attention." />;
+import { ReviewScreen } from '@/screens/review/ReviewScreen';
+import { useLayoutMode } from '@/theme/settings';
+
+export default function ReviewRoute() {
+  const { takeId } = useLocalSearchParams<{ takeId: string }>();
+  return <ReviewScreen layout={useLayoutMode()} takeId={takeId} />;
 }

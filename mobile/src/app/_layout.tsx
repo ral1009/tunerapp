@@ -12,6 +12,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 
 import { LibraryProvider, useLibrary } from '@/data/libraryStore';
+import { TakesProvider } from '@/data/takesStore';
 import { SettingsProvider, useSettings } from '@/theme/settings';
 import { colors } from '@/theme/tokens';
 
@@ -33,10 +34,12 @@ export default function RootLayout() {
   return (
     <SettingsProvider>
       <LibraryProvider>
-        <ThemeProvider value={theme}>
-          <StatusBar style="light" />
-          <Gate ready={fontsLoaded || !!fontError} />
-        </ThemeProvider>
+        <TakesProvider>
+          <ThemeProvider value={theme}>
+            <StatusBar style="light" />
+            <Gate ready={fontsLoaded || !!fontError} />
+          </ThemeProvider>
+        </TakesProvider>
       </LibraryProvider>
     </SettingsProvider>
   );

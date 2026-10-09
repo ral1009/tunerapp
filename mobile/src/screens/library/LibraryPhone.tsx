@@ -4,6 +4,8 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { NavBar } from '@/components/nav';
 import { Body, Display, Eyebrow, GoldButton, Maple, Rule, Screen, Serif, TextButton, useGutter } from '@/components/ui';
 import { useLibrary, type Piece } from '@/data/libraryStore';
+import { takeScore, useTakes, type Take } from '@/data/takesStore';
+import { useSettings } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 
 export function pieceSubtitle(piece: Piece): string {
@@ -11,9 +13,27 @@ export function pieceSubtitle(piece: Piece): string {
   return [piece.composer, `${piece.measureCount} bars`, source].filter(Boolean).join(' · ');
 }
 
+// The latest whole-piece score (or loop, if that's all there is), and how it moved since the take before.
+export function usePieceStatus(): (pieceId: string) => { score: number | null; line: string; up: boolean } {
+  const takes = useTakes();
+  const { settings } = useSettings();
+  return (pieceId) => {
+    const mine = takes.forPiece(pieceId);
+    if (mine.length === 0) return { score: null, line: 'Not played yet', up: false };
+    const whole = mine.filter((t: Take) => !t.region);
+    const pool = whole.length ? whole : mine;
+    const latest = takeScore(pool[0], settings.reference, settings.strictness);
+    const before = pool[1] ? takeScore(pool[1], settings.reference, settings.strictness) : null;
+    const delta = latest !== null && before !== null ? latest - before : null;
+    const line = delta === null ? `${mine.length} take${mine.length === 1 ? '' : 's'}` : delta > 0 ? `+ ${delta} since last take` : delta < 0 ? `− ${-delta} since last take` : 'steady';
+    return { score: latest, line, up: delta !== null && delta > 0 };
+  };
+}
+
 export function LibraryPhone() {
   const g = useGutter('phone');
   const { pieces, current } = useLibrary();
+  const status = usePieceStatus();
   return (
     <Screen layout="phone" edges={['top']}>
       <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
@@ -29,7 +49,7 @@ export function LibraryPhone() {
               <Display size={30} style={{ marginTop: 12 }} numberOfLines={1}>{current.title}</Display>
               <Serif size={15} style={{ color: colors.cream }}>{current.composer}</Serif>
               <View style={styles.continueFoot}>
-                <Body style={{ color: colors.cream, fontSize: 12, flex: 1 }}>Not played yet</Body>
+                <Body style={{ color: colors.cream, fontSize: 12, flex: 1 }}>{status(current.id).score !== null ? `${status(current.id).score}% last take` : 'Not played yet'}</Body>
                 <GoldButton label="Open" href={{ pathname: '/piece/[id]', params: { id: current.id } }} style={{ minHeight: 40, paddingHorizontal: 16 }} />
               </View>
             </View>
@@ -47,8 +67,10 @@ export function LibraryPhone() {
                     <Text style={styles.meta}>{pieceSubtitle(piece)}</Text>
                   </View>
                   <View style={{ alignItems: 'flex-end', gap: 3 }}>
-                    <Display size={22}>—</Display>
-                    <Text style={styles.meta}>{piece.measureIssues.length ? `${piece.measureIssues.length} bars to check` : 'new'}</Text>
+                    <Display size={22}>{status(piece.id).score === null ? '—' : `${status(piece.id).score}%`}</Display>
+                    <Text style={[styles.meta, status(piece.id).up && { color: colors.good }]}>
+                      {status(piece.id).score === null && piece.measureIssues.length ? `${piece.measureIssues.length} bars to check` : status(piece.id).line}
+                    </Text>
                   </View>
                 </View>
                 <Rule soft />
