@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { ScoreMeasureIssue } from '@core/score/schema';
 import type { EngineEvent } from '@core/score/engine/protocol';
@@ -11,6 +11,7 @@ import { useLibrary } from '@/data/libraryStore';
 import { ScoreView, type ScoreViewHandle } from '@/score/ScoreView';
 import { useScoreTheme, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { Tappable } from '@/components/Tappable';
 
 // Fix what the photo reading got wrong, one flagged bar at a time: pick a note, nudge its pitch a
 // semitone at a time or change its length, apply. The score engine patches the MusicXML
@@ -143,9 +144,9 @@ export function FixBarScreen({ layout, id }: { layout: LayoutMode; id: string })
       {issues.map((it, i) => {
         const on = i === issueIndex;
         return (
-          <Pressable key={it.measureNumber} onPress={() => { setIssueIndex(i); setNoteIndex(0); setEdit(null); }} accessibilityRole="tab" accessibilityState={{ selected: on }} accessibilityLabel={`Bar ${it.measureNumber}`} style={[styles.chip, { borderBottomColor: on ? colors.goldBright : 'transparent' }]}>
+          <Tappable key={it.measureNumber} onPress={() => { setIssueIndex(i); setNoteIndex(0); setEdit(null); }} accessibilityRole="tab" accessibilityState={{ selected: on }} accessibilityLabel={`Bar ${it.measureNumber}`} style={[styles.chip, { borderBottomColor: on ? colors.goldBright : 'transparent' }]}>
             <Text style={[styles.chipText, { color: on ? colors.bright : colors.faintText }]}>{it.measureNumber}</Text>
-          </Pressable>
+          </Tappable>
         );
       })}
     </ScrollView>

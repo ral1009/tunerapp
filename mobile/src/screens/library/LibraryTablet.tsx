@@ -1,6 +1,6 @@
 import { Link } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NavBar } from '@/components/nav';
 import { Display, Eyebrow, GoldButton, Progress, Screen, TextButton, Wood } from '@/components/ui';
@@ -10,6 +10,7 @@ import { useSettings } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 
 import { greeting, pieceSubtitle, Plus, roman, usePieceStatus } from './LibraryPhone';
+import { Tappable } from '@/components/Tappable';
 
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 
@@ -37,10 +38,10 @@ export function LibraryTablet() {
               <View style={{ gap: 18, maxWidth: 600 }}>
                 <Eyebrow tone="bright" style={{ fontSize: 11 }}>{current.openedAt ? 'Continue' : 'Start here'} · {current.measureCount} bars</Eyebrow>
                 <Link href={{ pathname: '/piece/[id]', params: { id: current.id } }} asChild>
-                  <Pressable accessibilityRole="link" style={{ gap: 10 }}>
+                  <Tappable accessibilityRole="link" style={{ gap: 10 }}>
                     <Display size={current.title.length > 14 ? 84 : 120} numberOfLines={2} style={styles.heroTitle}>{current.title}</Display>
                     <Text style={styles.heroSub} numberOfLines={1}>{pieceSubtitle(current)}</Text>
-                  </Pressable>
+                  </Tappable>
                 </Link>
                 <Progress value={currentStatus?.score != null ? currentStatus.score / 100 : 0} style={{ marginTop: 8 }} />
                 <View style={styles.heroFoot}>
@@ -70,10 +71,10 @@ export function LibraryTablet() {
             <View style={styles.listHead}>
               <Display size={40}>Library</Display>
               <Link href="/add-music" asChild>
-                <Pressable accessibilityRole="button" style={styles.addLink}>
+                <Tappable accessibilityRole="button" style={styles.addLink}>
                   <Plus color={colors.gold} size={12} />
                   <Text style={styles.addText}>Add music</Text>
-                </Pressable>
+                </Tappable>
               </Link>
             </View>
             <View style={{ marginTop: 26 }}>
@@ -82,7 +83,7 @@ export function LibraryTablet() {
                 const isCurrent = piece.id === current?.id;
                 return (
                   <Link key={piece.id} href={{ pathname: '/piece/[id]', params: { id: piece.id } }} asChild>
-                    <Pressable accessibilityRole="link" style={styles.row}>
+                    <Tappable accessibilityRole="link" style={styles.row}>
                       <Text style={styles.numeral}>{roman(i + 1)}</Text>
                       <View style={{ flex: 1, gap: 4 }}>
                         <Text style={[styles.title, isCurrent && { color: colors.bright }]} numberOfLines={1}>{piece.title}</Text>
@@ -93,7 +94,7 @@ export function LibraryTablet() {
                       <Text style={[styles.score, { color: s.score === null ? colors.faint : s.up || isCurrent ? colors.goldBright : colors.cream }]}>
                         {s.score === null ? '—' : `${s.score}%`}
                       </Text>
-                    </Pressable>
+                    </Tappable>
                   </Link>
                 );
               })}

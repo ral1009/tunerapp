@@ -157,18 +157,71 @@ async def get_take(take_id: str) -> Response:
     return Response(content=audio, media_type="application/octet-stream")
 
 
+@app.get("/api/health")
+async def health() -> JSONResponse:
+    """Cheap reachability check for the app: it pings this to show whether the laptop is there."""
+    return JSONResponse(content={"ok": True})
+
+
 @app.post("/api/parse-sheet")
 async def parse_sheet(file: UploadFile = File(...)) -> JSONResponse:
     if not file.filename:
         return JSONResponse(status_code=400, content={"error": "No file was provided."})
+    return await _parse_sheet_bytes(file.filename, await file.read())
 
+
+# Photo reading as a job (the phone app): POST starts it and returns at once, GET reports on it.
+# A phone photo can take HOMR well over a minute, longer than a mobile HTTP request reliably stays
+# open (iOS drops one after ~60 s), and a dropped request lost the whole read with no explanation.
+PARSE_JOBS: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+PARSE_JOBS_KEPT = 20
+
+
+@app.post("/api/parse-sheet/jobs")
+async def start_parse_job(file: UploadFile = File(...)) -> JSONResponse:
+    if not file.filename:
+        return JSONResponse(status_code=400, content={"error": "No file was provided."})
+    contents = await file.read()
+    job_id = uuid.uuid4().hex
+    job: dict[str, Any] = {"status": "reading", "started": time.time(), "bytes": len(contents)}
+    PARSE_JOBS[job_id] = job
+    while len(PARSE_JOBS) > PARSE_JOBS_KEPT:
+        PARSE_JOBS.popitem(last=False)
+    logger.info("Photo job %s: %s, %d KB", job_id[:8], file.filename, len(contents) // 1024)
+
+    async def run() -> None:
+        response = await _parse_sheet_bytes(file.filename or "page.jpg", contents)
+        body = json.loads(response.body)
+        if response.status_code == 200:
+            job.update(status="done", result=body)
+        else:
+            job.update(status="error", error=body.get("error", "The photo couldn't be read."))
+        logger.info("Photo job %s: %s after %.1fs", job_id[:8], job["status"], time.time() - job["started"])
+
+    asyncio.create_task(run())
+    return JSONResponse(content={"jobId": job_id})
+
+
+@app.get("/api/parse-sheet/jobs/{job_id}")
+async def get_parse_job(job_id: str) -> JSONResponse:
+    job = PARSE_JOBS.get(job_id)
+    if job is None:
+        return JSONResponse(status_code=404, content={"error": "That photo job isn't known (the server may have restarted)."})
+    out: dict[str, Any] = {"status": job["status"], "elapsed": round(time.time() - job["started"], 1)}
+    if job["status"] == "done":
+        out.update(job["result"])
+    elif job["status"] == "error":
+        out["error"] = job["error"]
+    return JSONResponse(content=out)
+
+
+async def _parse_sheet_bytes(filename: str, contents: bytes) -> JSONResponse:
     temp_dir = TMP_ROOT / str(uuid.uuid4())
     temp_dir.mkdir(parents=True, exist_ok=True)
-    uploaded_path = temp_dir / Path(file.filename).name
+    uploaded_path = temp_dir / Path(filename).name
     created_paths = [uploaded_path]
 
     try:
-        contents = await file.read()
         uploaded_path.write_bytes(contents)
 
         # Off the event loop: HOMR takes tens of seconds, and calling it inline froze the whole
@@ -176,14 +229,14 @@ async def parse_sheet(file: UploadFile = File(...)) -> JSONResponse:
         try:
             xml_path = await asyncio.to_thread(homr_runner.parse, uploaded_path, HOMR_TIMEOUT_SECONDS)
         except homr_runner.HomrError as error:
-            logger.error("homr failed for %s: %s", file.filename, error)
+            logger.error("homr failed for %s: %s", filename, error)
             return JSONResponse(status_code=502, content={"error": "HOMR failed to parse the sheet image."})
         created_paths.append(xml_path)
 
         try:
             notes_data = _extract_notes_from_musicxml(xml_path)
         except ET.ParseError:
-            logger.exception("homr produced malformed MusicXML for %s", file.filename)
+            logger.exception("homr produced malformed MusicXML for %s", filename)
             return JSONResponse(status_code=422, content={"error": "HOMR produced invalid MusicXML."})
 
         if not notes_data:
@@ -203,16 +256,16 @@ async def parse_sheet(file: UploadFile = File(...)) -> JSONResponse:
             }
         )
     except subprocess.TimeoutExpired:
-        logger.error("homr timed out after %s seconds for %s", HOMR_TIMEOUT_SECONDS, file.filename)
+        logger.error("homr timed out after %s seconds for %s", HOMR_TIMEOUT_SECONDS, filename)
         return JSONResponse(
             status_code=504,
             content={"error": f"HOMR inference timed out after {HOMR_TIMEOUT_SECONDS} seconds."},
         )
     except FileNotFoundError:
-        logger.exception("uvx/homr command not found while parsing %s", file.filename)
+        logger.exception("uvx/homr command not found while parsing %s", filename)
         return JSONResponse(status_code=502, content={"error": "The HOMR command is not available in this environment."})
     except Exception:  # noqa: BLE001
-        logger.exception("Unexpected failure while parsing %s", file.filename)
+        logger.exception("Unexpected failure while parsing %s", filename)
         return JSONResponse(status_code=500, content={"error": "Failed to parse sheet image."})
     finally:
         for path in created_paths:

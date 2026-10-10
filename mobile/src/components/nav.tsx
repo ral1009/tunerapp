@@ -1,9 +1,10 @@
 import { Link, type Href } from 'expo-router';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useLibrary } from '@/data/libraryStore';
 import { colors, fonts } from '@/theme/tokens';
+import { Tappable } from '@/components/Tappable';
 
 type Section = 'library' | 'practise' | 'tuner' | 'settings';
 
@@ -26,9 +27,9 @@ export function NavBar({ current, layout }: { current: Section; layout: 'phone' 
           const on = item.key === current;
           return (
             <Link key={item.key} href={item.href} asChild replace={item.key !== 'practise'}>
-              <Pressable accessibilityRole="link" accessibilityState={{ selected: on }} style={StyleSheet.flatten([styles.tabletItem, { borderBottomColor: on ? colors.goldBright : 'transparent' }])}>
+              <Tappable haptic accessibilityRole="link" accessibilityState={{ selected: on }} style={StyleSheet.flatten([styles.tabletItem, { borderBottomColor: on ? colors.goldBright : 'transparent' }])}>
                 <Text style={[styles.itemText, { color: on ? colors.ivory : colors.faintText }]}>{item.label}</Text>
-              </Pressable>
+              </Tappable>
             </Link>
           );
         })}
@@ -41,10 +42,10 @@ export function NavBar({ current, layout }: { current: Section; layout: 'phone' 
         const on = item.key === current;
         return (
           <Link key={item.key} href={item.href} asChild replace={item.key !== 'practise'}>
-            <Pressable accessibilityRole="link" accessibilityState={{ selected: on }} style={styles.phoneItem}>
+            <Tappable haptic accessibilityRole="link" accessibilityState={{ selected: on }} style={styles.phoneItem}>
               <View style={[styles.mark, { backgroundColor: on ? colors.goldBright : 'transparent' }]} />
               <Text style={[styles.itemText, { color: on ? colors.ivory : colors.faintText }]}>{item.label}</Text>
-            </Pressable>
+            </Tappable>
           </Link>
         );
       })}

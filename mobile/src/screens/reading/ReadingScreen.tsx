@@ -1,3 +1,4 @@
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -24,20 +25,65 @@ async function readMusicXml(upload: PendingUpload): Promise<string> {
   return response.text();
 }
 
-async function readPhoto(upload: PendingUpload): Promise<string> {
+// Phone photos are 12+ megapixels and may be HEIC; HOMR reads a 1300×1700 JPEG perfectly well.
+// Shrinking to this long edge and re-encoding as JPEG makes the upload a few hundred KB.
+const MAX_PHOTO_EDGE = 2200;
+const UPLOAD_TIMEOUT_MS = 45000;
+const POLL_MS = 1500;
+const POLL_FAILURES_ALLOWED = 6;
+
+async function preparePhoto(upload: PendingUpload): Promise<{ uri: string; name: string; type: string }> {
+  const first = await ImageManipulator.manipulate(upload.uri).renderAsync();
+  const longEdge = Math.max(first.width, first.height);
+  const image = longEdge > MAX_PHOTO_EDGE
+    ? await ImageManipulator.manipulate(upload.uri).resize(first.width >= first.height ? { width: MAX_PHOTO_EDGE } : { height: MAX_PHOTO_EDGE }).renderAsync()
+    : first;
+  const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.85 });
+  return { uri: saved.uri, name: 'page.jpg', type: 'image/jpeg' };
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Photo reading runs as a job on the server: upload, then ask how it's going until it's done. One
+// long request used to carry the whole read, and a phone drops a request after about a minute --
+// a big photo can take HOMR longer than that -- losing the read with no explanation.
+async function readPhoto(upload: PendingUpload, isCancelled: () => boolean): Promise<string> {
   const form = new FormData();
   if (upload.file) form.append('file', upload.file, upload.name);
   // React Native's FormData takes a { uri, name, type } descriptor for a local file.
-  else form.append('file', { uri: upload.uri, name: upload.name, type: upload.mimeType } as unknown as Blob);
-  let response: Response;
+  else form.append('file', (await preparePhoto(upload)) as unknown as Blob);
+  const base = serverUrl();
+  let jobId: string;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
   try {
-    response = await fetch(`${serverUrl()}/api/parse-sheet`, { method: 'POST', body: form });
-  } catch {
-    throw new Error(`Couldn't reach the music reader at ${serverUrl()}. Is the server running and on the same Wi-Fi?`);
+    const response = await fetch(`${base}/api/parse-sheet/jobs`, { method: 'POST', body: form, signal: controller.signal });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.jobId) throw new Error(body.error ?? `The server didn't accept the photo (${response.status}).`);
+    jobId = body.jobId;
+  } catch (e) {
+    if (e instanceof Error && e.name === 'AbortError') throw new Error(`Sending the photo to ${base} took too long. Is the laptop's Wi-Fi connection slow?`);
+    if (e instanceof TypeError) throw new Error(`Couldn't reach the server at ${base}. Is it running, and is the phone on the same Wi-Fi?`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || !body.xmlData) throw new Error(body.error ?? `The music reader returned an error (${response.status}).`);
-  return body.xmlData as string;
+  let failures = 0;
+  for (;;) {
+    if (isCancelled()) throw new Error('Cancelled');
+    await wait(POLL_MS);
+    try {
+      const response = await fetch(`${base}/api/parse-sheet/jobs/${jobId}`);
+      const body = await response.json();
+      failures = 0;
+      if (body.status === 'done' && body.xmlData) return body.xmlData as string;
+      if (body.status === 'error' || !response.ok) throw new Error(body.error ?? 'The photo couldn’t be read.');
+    } catch (e) {
+      if (!(e instanceof TypeError)) throw e;
+      failures += 1;
+      if (failures > POLL_FAILURES_ALLOWED) throw new Error(`Lost the connection to the server at ${base} while it was reading the photo.`);
+    }
+  }
 }
 
 export function ReadingScreen({ layout }: { layout: LayoutMode }) {
@@ -58,7 +104,7 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
     const timer = setInterval(() => setElapsed((Date.now() - started) / 1000), 500);
     (async () => {
       try {
-        const text = upload.kind === 'musicxml' ? await readMusicXml(upload) : (setPhase('reading'), await readPhoto(upload));
+        const text = upload.kind === 'musicxml' ? await readMusicXml(upload) : (setPhase('reading'), await readPhoto(upload, () => cancelled));
         if (cancelled) return;
         setXml(text);
         setPhase('checking');
@@ -160,7 +206,7 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
                 </View>
               ))}
             </View>
-            <Text style={styles.left}>{phase === 'reading' ? (left > 0 ? `About ${left} seconds left` : 'Nearly there…') : 'You can tune up while you wait'}</Text>
+            <Text style={styles.left}>{phase === 'reading' ? (left > 0 ? `About ${left} seconds left` : 'Still reading — a large page can take a minute or two') : 'You can tune up while you wait'}</Text>
           </>
         )}
       </View>

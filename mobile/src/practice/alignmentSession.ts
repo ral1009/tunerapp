@@ -27,6 +27,8 @@ export interface SessionCallbacks {
 }
 
 const GATE_HOLD_MS = 400;
+const CONNECT_TIMEOUT_MS = 6000;
+const READY_TIMEOUT_MS = 30000;
 const CALIBRATION_MS = 500;
 const CALIBRATION_GATE_RATIO = 1.5;
 const CALIBRATION_GATE_FLOOR_RMS = 0.00002;
@@ -107,19 +109,47 @@ export class AlignmentSession {
     this.socket = socket;
     this.setStatus('connecting');
 
+    const host = serverUrl().replace(/^https?:\/\//, '');
     const ready = await new Promise<{ hopLength: number; totalQuarters: number }>((resolve, reject) => {
+      // Never wait forever: a socket that doesn't open, or a server that never says ready, is a
+      // clear error after a few seconds rather than "Connecting…" for good.
+      const openTimer = setTimeout(() => {
+        reject(new Error(`Couldn't reach the server at ${host}. Is it running with --host 0.0.0.0, and is this device on the same Wi-Fi?`));
+        socket.close();
+      }, CONNECT_TIMEOUT_MS);
+      let readyTimer: ReturnType<typeof setTimeout> | null = null;
+      const done = () => {
+        clearTimeout(openTimer);
+        if (readyTimer) clearTimeout(readyTimer);
+      };
       const config = () => socket.send(JSON.stringify({ type: 'config', scoreHash, scoreXml, sampleRate }));
       socket.onopen = () => {
+        clearTimeout(openTimer);
+        readyTimer = setTimeout(() => {
+          reject(new Error('The server took too long to prepare the score. Try again; if it keeps happening, restart the server.'));
+          socket.close();
+        }, READY_TIMEOUT_MS);
         this.setStatus('preparing');
         config();
       };
-      socket.onerror = () => reject(new Error(`Couldn't reach the alignment server at ${serverUrl()}.`));
-      socket.onclose = () => reject(new Error('The alignment server closed the connection.'));
+      socket.onerror = () => {
+        done();
+        reject(new Error(`Couldn't reach the server at ${host}. Is it running with --host 0.0.0.0, and is this device on the same Wi-Fi?`));
+      };
+      socket.onclose = () => {
+        done();
+        reject(new Error('The server closed the connection before practice could start.'));
+      };
       socket.onmessage = (event) => {
         const message = JSON.parse(String(event.data));
         if (message.status === 'need_score') config();
-        else if (message.status === 'ready') resolve(message);
-        else if (message.status === 'error') reject(new Error(message.message ?? 'The alignment server reported an error.'));
+        else if (message.status === 'ready') {
+          done();
+          resolve(message);
+        } else if (message.status === 'error') {
+          done();
+          reject(new Error(message.message ?? 'The alignment server reported an error.'));
+        }
       };
     });
     if (this.stopped) {
@@ -132,6 +162,8 @@ export class AlignmentSession {
     socket.onclose = () => {
       if (this.stopped) return;
       this.socket = null;
+      // Dropped mid-take (Wi-Fi blip, server restart) rather than ended by us: say so.
+      if (this.status !== 'finishing' && this.status !== 'completed') this.fail('Lost the connection to the server. Your take so far couldn’t be graded — tap Try again.');
       this.callbacks.onClosed();
     };
     this.setStatus('waiting');

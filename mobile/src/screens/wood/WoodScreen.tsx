@@ -1,12 +1,13 @@
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { BackLink, Display, Eyebrow, Purfling, Screen, useGutter, Wood } from '@/components/ui';
 import { useLibrary } from '@/data/libraryStore';
 import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { WOODS, woodFor } from '@/theme/woods';
+import { Tappable } from '@/components/Tappable';
 
 // Settings › Wood: the wood behind your music, with a large preview of the choice.
 export function WoodScreen({ layout }: { layout: LayoutMode }) {
@@ -41,7 +42,7 @@ export function WoodScreen({ layout }: { layout: LayoutMode }) {
           {WOODS.map((wood) => {
             const on = wood.key === settings.wood;
             return (
-              <Pressable
+              <Tappable
                 key={wood.key}
                 accessibilityRole="radio"
                 accessibilityState={{ checked: on }}
@@ -56,7 +57,7 @@ export function WoodScreen({ layout }: { layout: LayoutMode }) {
                   <Text style={[styles.name, { color: on ? colors.bright : colors.soft }]}>{wood.name}</Text>
                   <Text style={styles.part}>{wood.part}</Text>
                 </View>
-              </Pressable>
+              </Tappable>
             );
           })}
         </View>

@@ -1,6 +1,6 @@
 import { Link, router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { EngineEvent, ScoreMeta } from '@core/score/engine/protocol';
 
@@ -11,6 +11,7 @@ import { useSettings } from '@/theme/settings';
 import { ScoreView } from '@/score/ScoreView';
 import { useScoreTheme, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { Tappable } from '@/components/Tappable';
 
 export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) {
   const tablet = layout === 'tablet';
@@ -135,19 +136,19 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
     <View>
       <GoldButton label="Practise" href={{ pathname: '/practice', params }} style={{ minHeight: 52 }} />
       <Link href={{ pathname: '/choose-bars', params }} asChild>
-        <Pressable accessibilityRole="link" style={StyleSheet.flatten([styles.actionRow, { marginTop: 8 }])}>
+        <Tappable accessibilityRole="link" style={StyleSheet.flatten([styles.actionRow, { marginTop: 8 }])}>
           <Text style={styles.actionText}>Loop a passage</Text>
           <Arrow />
-        </Pressable>
+        </Tappable>
       </Link>
       {issues.length ? (
         <Link href={{ pathname: '/fix-bar', params }} asChild>
-          <Pressable accessibilityRole="link" style={styles.actionRow}>
+          <Tappable accessibilityRole="link" style={styles.actionRow}>
             <Text style={styles.actionText}>
               Check misread bars <Text style={styles.issueCount}>· {issues.length} to check</Text>
             </Text>
             <Arrow />
-          </Pressable>
+          </Tappable>
         </Link>
       ) : null}
     </View>
@@ -164,10 +165,10 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
           const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toLowerCase();
           const what = t.region ? `loop, bars ${t.region.fromBar}–${t.region.toBar}` : 'whole piece';
           return (
-            <Pressable key={t.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/review', params: { takeId: t.id } })} style={styles.takeRow}>
+            <Tappable key={t.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/review', params: { takeId: t.id } })} style={styles.takeRow}>
               <Text style={styles.takeText}>{`${day}, ${time} · ${what}`}</Text>
               <Text style={styles.takeScore}>{v === null ? '—' : `${v}%`}</Text>
-            </Pressable>
+            </Tappable>
           );
         })}
       </View>

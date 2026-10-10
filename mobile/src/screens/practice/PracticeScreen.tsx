@@ -7,6 +7,7 @@ import type { CursorNoteInfo, QuarterIndexEntry } from '@core/score/renderer/sco
 
 import { firstPosition, nearestNote } from '@/audio/notes';
 import { BackLink, Display, Eyebrow, GoldButton, IntonationScale, paperSheet, Progress, Purfling, Screen, TextButton, useGutter, Wood } from '@/components/ui';
+import { ServerStatusLine } from '@/components/ServerStatus';
 import { useLibrary } from '@/data/libraryStore';
 import { useTakes } from '@/data/takesStore';
 import { highlightsFor } from '@/practice/grading';
@@ -194,6 +195,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
       {tablet ? (
         <View style={[styles.bandTabletInner, { paddingHorizontal: g }]}>
           <View style={{ flex: 1, gap: 6 }}>
+            <ServerStatusLine quietWhenOnline />
             {loopLine}
             {readout}
           </View>
@@ -207,7 +209,8 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
         </View>
       ) : (
         <View style={{ paddingHorizontal: g, paddingTop: 18, paddingBottom: 26, gap: 14 }}>
-          {loopLine}
+          <ServerStatusLine quietWhenOnline />
+            {loopLine}
           {readout}
           <LiveScale liveHz={practice.liveHz} a4={settings.referencePitchHz} />
           <View style={[styles.controls, { justifyContent: 'space-between' }]}>

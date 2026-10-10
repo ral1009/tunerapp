@@ -1,5 +1,5 @@
 import { Link } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NavBar } from '@/components/nav';
 import { Display, Eyebrow, GoldButton, Progress, Screen, Wood } from '@/components/ui';
@@ -7,6 +7,7 @@ import { useLibrary, type Piece } from '@/data/libraryStore';
 import { takeScore, useTakes, type Take } from '@/data/takesStore';
 import { useSettings } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { Tappable } from '@/components/Tappable';
 
 export function pieceSubtitle(piece: Piece): string {
   const source = piece.source === 'sample' ? 'Starter piece' : piece.source === 'photo' ? 'from a photo' : 'from a file';
@@ -72,9 +73,9 @@ export function LibraryPhone() {
           <View style={styles.top}>
             <Eyebrow tone="cream">{greeting()}</Eyebrow>
             <Link href="/add-music" asChild>
-              <Pressable accessibilityRole="button" accessibilityLabel="Add music" style={styles.add}>
+              <Tappable accessibilityRole="button" accessibilityLabel="Add music" style={styles.add}>
                 <Plus />
-              </Pressable>
+              </Tappable>
             </Link>
           </View>
           <View style={styles.hero}>
@@ -82,10 +83,10 @@ export function LibraryPhone() {
               <>
                 <Eyebrow tone="bright">{current.openedAt ? 'Continue' : 'Start here'} · {current.measureCount} bars</Eyebrow>
                 <Link href={{ pathname: '/piece/[id]', params: { id: current.id } }} asChild>
-                  <Pressable accessibilityRole="link" style={{ gap: 6 }}>
+                  <Tappable accessibilityRole="link" style={{ gap: 6 }}>
                     <Display size={current.title.length > 14 ? 50 : 66} numberOfLines={2} style={styles.heroTitle}>{current.title}</Display>
                     <Text style={styles.heroSub} numberOfLines={1}>{pieceSubtitle(current)}</Text>
-                  </Pressable>
+                  </Tappable>
                 </Link>
                 <Progress value={currentStatus?.score !== null && currentStatus?.score !== undefined ? currentStatus.score / 100 : 0} style={{ marginTop: 6 }} />
                 <View style={styles.heroFoot}>
@@ -114,7 +115,7 @@ export function LibraryPhone() {
               const s = status(piece.id);
               return (
                 <Link key={piece.id} href={{ pathname: '/piece/[id]', params: { id: piece.id } }} asChild>
-                  <Pressable accessibilityRole="link" style={styles.row}>
+                  <Tappable accessibilityRole="link" style={styles.row}>
                     <Text style={styles.numeral}>{roman(i + (current ? 2 : 1))}</Text>
                     <View style={{ flex: 1, gap: 3 }}>
                       <Text style={styles.title} numberOfLines={1}>{piece.title}</Text>
@@ -125,7 +126,7 @@ export function LibraryPhone() {
                     <Text style={[styles.score, { color: s.score === null ? colors.faint : s.up ? colors.goldBright : colors.cream }]}>
                       {s.score === null ? '—' : `${s.score}%`}
                     </Text>
-                  </Pressable>
+                  </Tappable>
                 </Link>
               );
             })}

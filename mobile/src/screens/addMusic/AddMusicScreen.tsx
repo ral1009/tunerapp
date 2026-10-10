@@ -2,13 +2,15 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Arrow, BackLink, Body, Display, Eyebrow, Purfling, Screen, Serif, useGutter, Wood } from '@/components/ui';
+import { ServerStatusLine } from '@/components/ServerStatus';
 import { useLibrary } from '@/data/libraryStore';
 import { setPendingUpload } from '@/data/pendingUpload';
 import type { LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { Tappable } from '@/components/Tappable';
 
 // Add a piece: photograph a page, choose a photo, or choose a MusicXML file. A photo goes to the
 // server's photo reading; MusicXML is used as-is. Either way the next stop is Reading.
@@ -67,7 +69,7 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
   const starters = library.pieces.filter((p) => p.source === 'sample');
 
   const photoPanel = (
-    <Pressable onPress={takePhoto} accessibilityRole="button" accessibilityLabel="Photograph a page" style={[styles.photo, tablet && { height: 420 }]}>
+    <Tappable onPress={takePhoto} accessibilityRole="button" accessibilityLabel="Photograph a page" style={[styles.photo, tablet && { height: 420 }]}>
       <Wood variant="hero" style={StyleSheet.absoluteFill} />
       <Purfling />
       <View style={styles.camera} accessibilityElementsHidden>
@@ -80,38 +82,38 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
         <Display size={tablet ? 34 : 26} style={{ lineHeight: tablet ? 38 : 30 }}>The part on your music stand</Display>
         <Text style={styles.photoBody}>We read the notes from the photo in about half a minute. Anything we misread, you can fix.</Text>
       </View>
-    </Pressable>
+    </Tappable>
   );
 
   const others = (
     <View style={{ gap: 0 }}>
-      <Pressable onPress={choosePhoto} accessibilityRole="button" style={styles.option}>
+      <Tappable onPress={choosePhoto} accessibilityRole="button" style={styles.option}>
         <View style={{ flex: 1, gap: 6 }}>
           <Serif size={20}>Choose a photo</Serif>
           <Text style={styles.hint}>A picture of the page you already have.</Text>
         </View>
         <Arrow />
-      </Pressable>
-      <Pressable onPress={chooseFile} accessibilityRole="button" style={styles.option}>
+      </Tappable>
+      <Tappable onPress={chooseFile} accessibilityRole="button" style={styles.option}>
         <View style={{ flex: 1, gap: 6 }}>
           <Serif size={20}>Choose a MusicXML file</Serif>
           <Text style={styles.hint}>Exported from MuseScore, Finale or Sibelius, or downloaded from IMSLP.</Text>
         </View>
         <Arrow />
-      </Pressable>
+      </Tappable>
       {message ? <Body style={{ color: colors.close, marginTop: 16 }}>{message}</Body> : null}
       {starters.length ? (
         <View style={{ marginTop: 34 }}>
           <Eyebrow tone="muted">Or start with</Eyebrow>
           <View style={{ marginTop: 10 }}>
             {starters.map((p) => (
-              <Pressable key={p.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/piece/[id]', params: { id: p.id } })} style={styles.starter}>
+              <Tappable key={p.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/piece/[id]', params: { id: p.id } })} style={styles.starter}>
                 <View style={{ flex: 1, gap: 3 }}>
                   <Serif size={18}>{p.title}</Serif>
                   <Text style={styles.hint}>{p.measureCount} bars · {p.composer}</Text>
                 </View>
                 <Text style={styles.open}>Open</Text>
-              </Pressable>
+              </Tappable>
             ))}
           </View>
         </View>
@@ -126,6 +128,7 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
           <BackLink label="Library" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
         </View>
         <Display size={tablet ? 64 : 44} style={{ paddingHorizontal: g, marginTop: 18 }}>Add music</Display>
+        <ServerStatusLine quietWhenOnline style={{ paddingHorizontal: g, marginTop: 12 }} />
         <View style={[{ paddingHorizontal: tablet ? g : 16, marginTop: 26 }, tablet && styles.bodyTablet]}>
           <View style={tablet ? { flex: 1.1 } : null}>{photoPanel}</View>
           <View style={[tablet ? { flex: 1 } : { paddingHorizontal: 12, marginTop: 10 }]}>{others}</View>

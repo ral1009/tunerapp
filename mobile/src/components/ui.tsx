@@ -1,13 +1,14 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Link, type Href } from 'expo-router';
-import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Animated, Easing, StyleSheet, Text, useWindowDimensions, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useSettings } from '@/theme/settings';
 import { colors, fonts, gutters } from '@/theme/tokens';
 import { woodFor } from '@/theme/woods';
+import { Tappable } from '@/components/Tappable';
 
 // "Atelier": ebony black, one lit wood surface per screen, ivory Bodoni, gold hairlines.
 // See the "Violin App — Wood & Luxury" canvas for every screen this kit builds.
@@ -190,9 +191,9 @@ type ButtonProps = { label: string; href?: Href; onPress?: () => void; style?: S
 // expo-router's <Link asChild> drops function styles (the outline vanished on the web build).
 export function GoldButton({ label, href, onPress, style, disabled }: ButtonProps) {
   const inner = (
-    <Pressable onPress={onPress} disabled={disabled} accessibilityRole="button" style={StyleSheet.flatten([styles.goldButton, disabled && { opacity: 0.45 }, style])}>
+    <Tappable haptic onPress={onPress} disabled={disabled} accessibilityRole="button" style={StyleSheet.flatten([styles.goldButton, disabled && { opacity: 0.45 }, style])}>
       <Text style={styles.goldButtonText}>{label}</Text>
-    </Pressable>
+    </Tappable>
   );
   return href ? <Link href={href} asChild>{inner}</Link> : inner;
 }
@@ -201,10 +202,10 @@ export function GoldButton({ label, href, onPress, style, disabled }: ButtonProp
 export function TextButton({ label, href, onPress, style, tone = 'cream', arrow }: ButtonProps & { tone?: 'cream' | 'gold' | 'muted'; arrow?: boolean }) {
   const color = tone === 'gold' ? colors.champagne : tone === 'muted' ? colors.soft : colors.cream;
   const inner = (
-    <Pressable onPress={onPress} accessibilityRole="button" hitSlop={8} style={StyleSheet.flatten([styles.textButton, style])}>
+    <Tappable onPress={onPress} accessibilityRole="button" hitSlop={8} style={StyleSheet.flatten([styles.textButton, style])}>
       <Text style={[styles.textButtonText, { color }]}>{label}</Text>
       {arrow ? <Arrow color={color} /> : null}
-    </Pressable>
+    </Tappable>
   );
   return href ? <Link href={href} asChild>{inner}</Link> : inner;
 }
@@ -213,10 +214,10 @@ export function TextButton({ label, href, onPress, style, tone = 'cream', arrow 
 export function BackLink({ label, onPress, href, tone = 'gold' }: { label: string; onPress?: () => void; href?: Href; tone?: 'gold' | 'light' }) {
   const color = tone === 'gold' ? colors.gold : colors.champagne;
   const inner = (
-    <Pressable onPress={onPress} accessibilityRole="link" accessibilityLabel={`Back to ${label}`} hitSlop={8} style={styles.back}>
+    <Tappable onPress={onPress} accessibilityRole="link" accessibilityLabel={`Back to ${label}`} hitSlop={8} style={styles.back}>
       <View style={[styles.chevron, { borderColor: color }]} />
       <Text style={[styles.backText, { color }]}>{label}</Text>
-    </Pressable>
+    </Tappable>
   );
   return href ? <Link href={href} asChild>{inner}</Link> : inner;
 }
@@ -244,8 +245,9 @@ export function Choice<T extends string | number>({ options, value, onChange, la
       {options.map((option) => {
         const on = option.value === value;
         return (
-          <Pressable
+          <Tappable
             key={String(option.value)}
+            haptic
             accessibilityRole="radio"
             accessibilityState={{ checked: on }}
             onPress={() => onChange(option.value)}
@@ -253,7 +255,7 @@ export function Choice<T extends string | number>({ options, value, onChange, la
             style={[styles.choice, { borderBottomColor: on ? colors.goldBright : 'transparent' }]}
           >
             <Text style={[styles.choiceText, { color: on ? colors.ivory : colors.faintText }]}>{option.label}</Text>
-          </Pressable>
+          </Tappable>
         );
       })}
     </View>
@@ -261,12 +263,31 @@ export function Choice<T extends string | number>({ options, value, onChange, la
 }
 
 // Intonation: a fine engraved scale of ±50 cents with one gold marker. Fills its parent's width.
+// The marker glides between readings (they arrive ~8 a second) instead of jumping: each new
+// reading eases it over a little longer than the gap between readings, on the native driver, so
+// it moves continuously and costs the JavaScript thread nothing. No note: it fades out in place.
+const MARKER_GLIDE_MS = 150;
+
 export function IntonationScale({ cents, style }: { cents: number | null; style?: StyleProp<ViewStyle> }) {
   const ticks = [];
   for (let c = -50; c <= 50; c += 10) ticks.push(c);
   const clamped = cents === null ? null : Math.max(-50, Math.min(50, cents));
+  const [width, setWidth] = useState(0);
+  const [position] = useState(() => new Animated.Value(0.5));
+  const [shown] = useState(() => new Animated.Value(0));
+  useEffect(() => {
+    if (clamped === null) {
+      Animated.timing(shown, { toValue: 0, duration: 260, useNativeDriver: true }).start();
+      return;
+    }
+    Animated.parallel([
+      Animated.timing(position, { toValue: (50 + clamped) / 100, duration: MARKER_GLIDE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.timing(shown, { toValue: 1, duration: 120, useNativeDriver: true }),
+    ]).start();
+  }, [clamped, position, shown]);
   return (
     <View
+      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
       style={[{ height: 40 }, style]}
       accessible
       accessibilityLabel={cents === null ? 'No note' : `${Math.abs(Math.round(cents))} cents ${cents >= 0 ? 'sharp' : 'flat'}`}
@@ -289,9 +310,9 @@ export function IntonationScale({ cents, style }: { cents: number | null; style?
           />
         );
       })}
-      {clamped !== null ? (
-        <View style={[styles.marker, { left: `${50 + clamped}%` }]} />
-      ) : null}
+      <Animated.View
+        style={[styles.marker, { opacity: shown, transform: [{ translateX: position.interpolate({ inputRange: [0, 1], outputRange: [0, width] }) }] }]}
+      />
       <Text style={[styles.scaleLabel, { left: 0 }]}>Flat</Text>
       <Text style={[styles.scaleLabel, { right: 0 }]}>Sharp</Text>
     </View>
@@ -346,7 +367,7 @@ const styles = StyleSheet.create({
   choiceRow: { flexDirection: 'row', flexWrap: 'wrap' },
   choice: { minHeight: 44, justifyContent: 'center', borderBottomWidth: 1 },
   choiceText: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 2.5, textTransform: 'uppercase' },
-  marker: { position: 'absolute', top: 0, width: 2, height: 28, marginLeft: -1, backgroundColor: colors.markerGold, shadowColor: colors.markerGold, shadowOpacity: 0.7, shadowRadius: 8 },
+  marker: { position: 'absolute', left: 0, top: 0, width: 2, height: 28, marginLeft: -1, backgroundColor: colors.markerGold, shadowColor: colors.markerGold, shadowOpacity: 0.7, shadowRadius: 8 },
   scaleLabel: { position: 'absolute', top: 28, fontFamily: fonts.sans, fontSize: 9, letterSpacing: 2, textTransform: 'uppercase', color: colors.muted },
   page: { backgroundColor: colors.paper, shadowColor: '#000', shadowOpacity: 0.55, shadowRadius: 18, shadowOffset: { width: 0, height: 14 }, elevation: 10 },
   pageRule: { position: 'absolute', left: 8, right: 8, top: 8, bottom: 8, borderWidth: 1, borderColor: 'rgba(166,124,58,0.5)' },

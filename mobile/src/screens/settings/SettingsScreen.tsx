@@ -1,13 +1,15 @@
 import { Image } from 'expo-image';
 import { Link } from 'expo-router';
 import type { ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NavBar } from '@/components/nav';
+import { ServerStatusLine } from '@/components/ServerStatus';
 import { Choice, Display, Screen, useGutter, Wood } from '@/components/ui';
 import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { woodFor } from '@/theme/woods';
+import { Tappable } from '@/components/Tappable';
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
@@ -45,7 +47,7 @@ export function SettingsScreen({ layout }: { layout: LayoutMode }) {
               options={[{ value: 'paper', label: 'Paper' }, { value: 'ebony', label: 'Ebony' }]} />
           </Row>
           <Link href="/wood" asChild>
-            <Pressable accessibilityRole="link" style={styles.row}>
+            <Tappable accessibilityRole="link" style={styles.row}>
               <Text style={styles.label}>Wood</Text>
               <View style={styles.linkValue}>
                 <View style={styles.swatchFrame}>
@@ -54,7 +56,7 @@ export function SettingsScreen({ layout }: { layout: LayoutMode }) {
                 <Text style={styles.value}>{wood.name}</Text>
                 <Chevron />
               </View>
-            </Pressable>
+            </Tappable>
           </Link>
         </>
       ),
@@ -76,10 +78,10 @@ export function SettingsScreen({ layout }: { layout: LayoutMode }) {
               {([440, 442, 443] as const).map((hz) => {
                 const on = hz === settings.referencePitchHz;
                 return (
-                  <Pressable key={hz} accessibilityRole="radio" accessibilityState={{ checked: on }} onPress={() => update({ referencePitchHz: hz })} hitSlop={6}
+                  <Tappable key={hz} accessibilityRole="radio" accessibilityState={{ checked: on }} onPress={() => update({ referencePitchHz: hz })} hitSlop={6}
                     style={[styles.hz, { borderBottomColor: on ? colors.goldBright : 'transparent' }]}>
                     <Text style={[styles.hzText, { color: on ? colors.bright : colors.faintText }]}>{hz}</Text>
-                  </Pressable>
+                  </Tappable>
                 );
               })}
               <Text style={styles.hzUnit}>Hz</Text>
@@ -92,14 +94,22 @@ export function SettingsScreen({ layout }: { layout: LayoutMode }) {
       title: 'Microphone',
       rows: (
         <Link href="/mic-check" asChild>
-          <Pressable accessibilityRole="link" style={styles.row}>
+          <Tappable accessibilityRole="link" style={styles.row}>
             <Text style={styles.label}>Check microphone</Text>
             <View style={styles.linkValue}>
               <Text style={styles.value}>Room noise and your strings</Text>
               <Chevron />
             </View>
-          </Pressable>
+          </Tappable>
         </Link>
+      ),
+    },
+    {
+      title: 'Server',
+      rows: (
+        <View style={[styles.row, { paddingVertical: 14 }]}>
+          <ServerStatusLine />
+        </View>
       ),
     },
   ];
