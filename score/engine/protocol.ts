@@ -29,8 +29,12 @@ export interface BarBox {
   height: number;
 }
 
+export type ScoreLayout = "scroll" | "pages";
+
 export type EngineCommand =
-  | { type: "load"; xml: string; theme: ScoreTheme; render: boolean }
+  // layout "pages": printed pages, each sized to fit the screen whole (reading the music);
+  // "scroll" (default): one endless strip as wide as the screen (practising, with the cursor).
+  | { type: "load"; xml: string; theme: ScoreTheme; render: boolean; layout?: ScoreLayout }
   | { type: "theme"; theme: ScoreTheme }
   | { type: "cursor"; action: "show" | "hide" | "reset" }
   | { type: "seek"; quarter: number }

@@ -145,9 +145,13 @@ export function Eyebrow({ children, style, tone = 'gold' }: TextProps & { tone?:
 }
 
 // Large italic Bodoni: titles, bar numbers, scores.
+// Bodoni Moda's italic capitals (the T's swash most of all) reach above a tight line box, and iOS
+// clips the top of a first line to it: "Twinkle" read "'I'winkle" at 1.04. 1.2 leaves them room.
+const DISPLAY_LINE = 1.2;
+
 export function Display({ children, size = 40, style, numberOfLines }: TextProps & { size?: number }) {
   return (
-    <Text numberOfLines={numberOfLines} style={[{ fontFamily: fonts.display, fontSize: size, lineHeight: size * 1.04, color: colors.bright }, style]}>
+    <Text numberOfLines={numberOfLines} style={[{ fontFamily: fonts.display, fontSize: size, lineHeight: Math.round(size * DISPLAY_LINE), color: colors.bright }, style]}>
       {children}
     </Text>
   );

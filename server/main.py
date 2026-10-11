@@ -23,6 +23,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 import xml.etree.ElementTree as ET
 
 import homr_runner
+import page_images
 from position_manager import position_manager
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -178,19 +179,25 @@ PARSE_JOBS_KEPT = 20
 
 
 @app.post("/api/parse-sheet/jobs")
-async def start_parse_job(file: UploadFile = File(...)) -> JSONResponse:
-    if not file.filename:
+async def start_parse_job(file: list[UploadFile] = File(...)) -> JSONResponse:
+    # One or more files, in page order: photos of each page of a part, a PDF, or a mix. They're
+    # read one page at a time and joined into one score.
+    uploads = [(f.filename or f"page-{i + 1}.jpg", await f.read()) for i, f in enumerate(file)]
+    if not uploads:
         return JSONResponse(status_code=400, content={"error": "No file was provided."})
-    contents = await file.read()
     job_id = uuid.uuid4().hex
-    job: dict[str, Any] = {"status": "reading", "started": time.time(), "bytes": len(contents)}
+    total = sum(len(c) for _, c in uploads)
+    job: dict[str, Any] = {"status": "reading", "started": time.time(), "bytes": total}
     PARSE_JOBS[job_id] = job
     while len(PARSE_JOBS) > PARSE_JOBS_KEPT:
         PARSE_JOBS.popitem(last=False)
-    logger.info("Photo job %s: %s, %d KB", job_id[:8], file.filename, len(contents) // 1024)
+    logger.info("Photo job %s: %d file(s), %d KB", job_id[:8], len(uploads), total // 1024)
+
+    def progress(page: int, pages: int) -> None:
+        job.update(page=page, pages=pages)
 
     async def run() -> None:
-        response = await _parse_sheet_bytes(file.filename or "page.jpg", contents)
+        response = await _parse_sheet_files(uploads, progress)
         body = json.loads(response.body)
         if response.status_code == 200:
             job.update(status="done", result=body)
@@ -208,6 +215,8 @@ async def get_parse_job(job_id: str) -> JSONResponse:
     if job is None:
         return JSONResponse(status_code=404, content={"error": "That photo job isn't known (the server may have restarted)."})
     out: dict[str, Any] = {"status": job["status"], "elapsed": round(time.time() - job["started"], 1)}
+    if "pages" in job:
+        out.update(page=job["page"], pages=job["pages"])
     if job["status"] == "done":
         out.update(job["result"])
     elif job["status"] == "error":
@@ -215,23 +224,61 @@ async def get_parse_job(job_id: str) -> JSONResponse:
     return JSONResponse(content=out)
 
 
-async def _parse_sheet_bytes(filename: str, contents: bytes) -> JSONResponse:
+async def _parse_sheet_bytes(filename: str, contents: bytes, progress=None) -> JSONResponse:
+    return await _parse_sheet_files([(filename, contents)], progress)
+
+
+async def _parse_sheet_files(uploads: list[tuple[str, bytes]], progress=None) -> JSONResponse:
     temp_dir = TMP_ROOT / str(uuid.uuid4())
     temp_dir.mkdir(parents=True, exist_ok=True)
-    uploaded_path = temp_dir / Path(filename).name
-    created_paths = [uploaded_path]
+    created_paths: list[Path] = []
+    filename = uploads[0][0] if len(uploads) == 1 else f"{len(uploads)} files"
 
     try:
-        uploaded_path.write_bytes(contents)
+        # PDF, HEIC, AVIF, DNG... become PNG pages; JPEG and PNG pass through untouched. Each file
+        # gets its own folder, so converted pages and HOMR's output can't collide by name.
+        pages: list[Path] = []
+        for index, (name, contents) in enumerate(uploads):
+            folder = temp_dir / f"{index:02d}"
+            folder.mkdir()
+            uploaded_path = folder / (Path(name).name or "upload")
+            uploaded_path.write_bytes(contents)
+            created_paths.append(uploaded_path)
+            label = f"page {index + 1}" if len(uploads) > 1 else "That file"
+            try:
+                file_pages = await asyncio.to_thread(page_images.to_pages, uploaded_path)
+            except page_images.UnsupportedUpload as error:
+                message = str(error) if len(uploads) == 1 else f"{label.capitalize()}: {error}"
+                return JSONResponse(status_code=415, content={"error": message})
+            except Exception:  # noqa: BLE001
+                logger.exception("Couldn't convert %s to page images", name)
+                return JSONResponse(status_code=415, content={"error": f"{label.capitalize()} couldn't be opened as a picture or PDF."})
+            created_paths.extend(p for p in file_pages if p != uploaded_path)
+            pages.extend(file_pages)
+        if len(pages) > 1:
+            logger.info("%s: %d pages", filename, len(pages))
 
         # Off the event loop: HOMR takes tens of seconds, and calling it inline froze the whole
-        # server -- every open alignment WebSocket included -- until it finished.
-        try:
-            xml_path = await asyncio.to_thread(homr_runner.parse, uploaded_path, HOMR_TIMEOUT_SECONDS)
-        except homr_runner.HomrError as error:
-            logger.error("homr failed for %s: %s", filename, error)
-            return JSONResponse(status_code=502, content={"error": "HOMR failed to parse the sheet image."})
-        created_paths.append(xml_path)
+        # server -- every open alignment WebSocket included -- until it finished. One page at a
+        # time; a page HOMR finds no music on (a title page, a blank back) is skipped.
+        page_xml: list[Path] = []
+        for index, page in enumerate(pages):
+            if progress is not None:
+                progress(index + 1, len(pages))
+            try:
+                page_xml.append(await asyncio.to_thread(homr_runner.parse, page, HOMR_TIMEOUT_SECONDS))
+                created_paths.append(page_xml[-1])
+            except homr_runner.HomrError as error:
+                logger.error("homr failed for %s page %d: %s", filename, index + 1, error)
+                if len(pages) == 1:
+                    return JSONResponse(status_code=502, content={"error": "HOMR failed to parse the sheet image."})
+        if not page_xml:
+            return JSONResponse(status_code=502, content={"error": "HOMR couldn't read music on any page."})
+        xml_path = page_xml[0]
+        if len(page_xml) > 1:
+            xml_path = temp_dir / "merged.musicxml"
+            xml_path.write_text(_merge_page_scores(page_xml), encoding="utf-8")
+            created_paths.append(xml_path)
 
         try:
             notes_data = _extract_notes_from_musicxml(xml_path)
@@ -277,6 +324,22 @@ async def _parse_sheet_bytes(filename: str, contents: bytes) -> JSONResponse:
 
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _merge_page_scores(paths: list[Path]) -> str:
+    """One score from HOMR's per-page scores: each later page's bars appended to the first page's
+    part (by part order), bar numbers continuing on. A later page's first bar restates its clef,
+    key and time, which is harmless; its title text and part list are dropped."""
+    first = ET.parse(paths[0]).getroot()
+    parts = first.findall("part")
+    for path in paths[1:]:
+        later = ET.parse(path).getroot().findall("part")
+        for index, part in enumerate(later[: len(parts)]):
+            parts[index].extend(part.findall("measure"))
+    for part in parts:
+        for number, measure in enumerate(part.findall("measure"), start=1):
+            measure.set("number", str(number))
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(first, encoding="unicode")
 
 
 @app.websocket("/ws/align")

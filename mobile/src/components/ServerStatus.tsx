@@ -5,13 +5,14 @@ import { useServerStatus, type ServerStatus as Status } from '@/config/useServer
 import { colors, fonts } from '@/theme/tokens';
 
 // A small dot and a line saying whether the laptop server answers. While checking, the dot breathes.
-export function ServerStatusLine({ style, quietWhenOnline = false }: { style?: StyleProp<ViewStyle>; quietWhenOnline?: boolean }) {
+// compact: one short line (the practice bar), with what to check left to Settings.
+export function ServerStatusLine({ style, quietWhenOnline = false, compact = false }: { style?: StyleProp<ViewStyle>; quietWhenOnline?: boolean; compact?: boolean }) {
   const { status, address } = useServerStatus();
   if (quietWhenOnline && status === 'online') return null;
-  return <StatusView status={status} address={address} style={style} />;
+  return <StatusView status={status} address={address} style={style} compact={compact} />;
 }
 
-function StatusView({ status, address, style }: { status: Status; address: string; style?: StyleProp<ViewStyle> }) {
+function StatusView({ status, address, style, compact }: { status: Status; address: string; style?: StyleProp<ViewStyle>; compact: boolean }) {
   const [pulse] = useState(() => new Animated.Value(1));
   useEffect(() => {
     if (status !== 'checking') {
@@ -33,11 +34,13 @@ function StatusView({ status, address, style }: { status: Status; address: strin
       ? `Connected to the server at ${host}`
       : status === 'checking'
         ? `Looking for the server at ${host}…`
-        : `Can’t reach the server at ${host}. Is it running with --host 0.0.0.0, and is this device on the same Wi-Fi?`;
+        : compact
+          ? `Can’t reach the server at ${host} — see Settings`
+          : `Can’t reach the server at ${host}. Is it running with --host 0.0.0.0, and is this device on the same Wi-Fi?`;
   return (
     <View style={[styles.row, style]} accessibilityRole="text" accessibilityLiveRegion="polite">
       <Animated.View style={[styles.dot, { opacity: pulse, backgroundColor: status === 'offline' ? colors.outSoft : status === 'online' ? colors.goldBright : colors.muted }]} />
-      <Text style={[styles.text, status === 'offline' && { color: colors.outSoft }]}>{text}</Text>
+      <Text style={[styles.text, status === 'offline' && { color: colors.outSoft }]} numberOfLines={compact ? 1 : undefined}>{text}</Text>
     </View>
   );
 }

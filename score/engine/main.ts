@@ -10,7 +10,7 @@ import { applyNoteCorrectionsToXml } from "../correctionUI/noteXmlCorrection";
 import { importMusicXmlToScore } from "../musicxmlImport";
 import { renderScore, type RenderedScoreHandle } from "../renderer";
 import { scoreRecordingOffline } from "../../practice/offlineIntonationScorer";
-import type { EngineCommand, EngineEvent, ScoreTheme } from "./protocol";
+import type { EngineCommand, EngineEvent, ScoreLayout, ScoreTheme } from "./protocol";
 
 declare global {
   interface Window {
@@ -39,13 +39,37 @@ let handle: RenderedScoreHandle | null = null;
 let quarterIndexCache: ReturnType<RenderedScoreHandle["cursor"]["buildQuarterIndex"]> = [];
 let currentXml = "";
 let currentTheme: ScoreTheme = "paper";
+let currentLayout: ScoreLayout = "scroll";
+// Behind the pages in page layout: the app's ebony, so the sheets sit on it like paper on a desk.
+const PAGE_GROUND = "#0B0806";
+// A4 portrait, height over width.
+const PAGE_ASPECT = 297 / 210;
 let selection: { from: number; to: number } | null = null;
 let titleForRender = "";
 let composerForRender = "";
 
 function applyTheme(theme: ScoreTheme): void {
   currentTheme = theme;
-  document.body.style.background = THEMES[theme].page;
+  const pages = currentLayout === "pages";
+  document.body.classList.toggle("pages", pages);
+  document.body.style.background = pages ? PAGE_GROUND : THEMES[theme].page;
+  document.documentElement.style.setProperty("--page", THEMES[theme].page);
+  sizePages();
+}
+
+// Page layout: OSMD scales each page to the container's width. Upright, the container is made
+// exactly as wide as a page that fits the screen whole, top to bottom; turned sideways, a whole
+// page would be too small to read, so pages fill the width (to a limit) and scroll.
+const MAX_PAGE_WIDTH = 900;
+function sizePages(): void {
+  if (currentLayout !== "pages") {
+    host.style.width = "";
+    return;
+  }
+  const available = window.innerWidth - 32;
+  const upright = window.innerHeight >= window.innerWidth;
+  const width = upright ? Math.min(available, (window.innerHeight - 32) / PAGE_ASPECT) : Math.min(available, MAX_PAGE_WIDTH);
+  host.style.width = `${Math.floor(Math.max(300, width))}px`;
 }
 
 async function render(): Promise<void> {
@@ -56,7 +80,9 @@ async function render(): Promise<void> {
     drawPartNames: false,
     titleOverride: titleForRender,
     composerOverride: composerForRender || undefined,
-    musicColor: THEMES[currentTheme].ink
+    musicColor: THEMES[currentTheme].ink,
+    pageFormat: currentLayout === "pages" ? "A4_P" : undefined,
+    cursorColor: THEMES[currentTheme].cursor
   });
   quarterIndexCache = handle.cursor.buildQuarterIndex();
   drawSelection();
@@ -111,6 +137,7 @@ async function receive(command: EngineCommand): Promise<void> {
         return;
       case "load": {
         currentXml = command.xml;
+        currentLayout = command.layout ?? "scroll";
         applyTheme(command.theme);
         const meta = await readMeta(command.xml);
         if (!command.render) {
@@ -203,8 +230,12 @@ window.addEventListener("message", (event: MessageEvent) => {
   const data = typeof event.data === "string" ? safeParse(event.data) : event.data;
   if (data && typeof data === "object" && "type" in data) void receive(data as EngineCommand);
 });
-// OSMD re-lays out on resize (autoResize); keep the selection on the right bars.
-window.addEventListener("resize", () => setTimeout(drawSelection, 400));
+// OSMD re-lays out on resize (autoResize); pages are re-sized first (this listener is added before
+// OSMD's), and the selection follows the bars.
+window.addEventListener("resize", () => {
+  sizePages();
+  setTimeout(drawSelection, 400);
+});
 
 function safeParse(text: string): unknown {
   try {

@@ -135,8 +135,14 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
   const actions = (
     <View>
       <GoldButton label="Practise" href={{ pathname: '/practice', params }} style={{ minHeight: 52 }} />
-      <Link href={{ pathname: '/choose-bars', params }} asChild>
+      <Link href={{ pathname: '/score/[id]', params }} asChild>
         <Tappable accessibilityRole="link" style={StyleSheet.flatten([styles.actionRow, { marginTop: 8 }])}>
+          <Text style={styles.actionText}>View the music</Text>
+          <Arrow />
+        </Tappable>
+      </Link>
+      <Link href={{ pathname: '/choose-bars', params }} asChild>
+        <Tappable accessibilityRole="link" style={styles.actionRow}>
           <Text style={styles.actionText}>Loop a passage</Text>
           <Arrow />
         </Tappable>

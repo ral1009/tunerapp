@@ -144,10 +144,11 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
 
   const finishButton =
     practice.phase === 'error' ? (
-      <GoldButton label="Try again" onPress={practice.retry} />
+      <GoldButton label="Try again" onPress={practice.retry} style={styles.finish} />
     ) : (
       <GoldButton
         label={region ? 'Stop looping' : 'Finish'}
+        style={styles.finish}
         onPress={() => (practice.phase === 'playing' || practice.phase === 'ready' ? practice.finish(true) : router.back())}
       />
     );
@@ -189,65 +190,68 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
     </View>
   ) : null;
 
+  // The bottom bar is kept low so the music gets the screen: one row on an iPad (live note, the
+  // scale, the controls), two short rows on a phone. Messages (server, loop, a jump) take a thin
+  // line above it only while there is something to say.
+  const scale = <LiveScale liveHz={practice.liveHz} a4={settings.referencePitchHz} />;
   const band = (
-    <Wood variant="band" style={tablet ? styles.bandTablet : styles.bandPhone}>
-      <Purfling style={{ marginTop: tablet ? 34 : 30 }} />
+    <Wood variant="band">
+      <Purfling />
+      <View style={[styles.notices, { paddingHorizontal: g }]}>
+        <ServerStatusLine quietWhenOnline compact />
+        {loopLine}
+        {jumpMessage ? <Text style={styles.jumpMessage}>{jumpMessage}</Text> : null}
+      </View>
       {tablet ? (
-        <View style={[styles.bandTabletInner, { paddingHorizontal: g }]}>
-          <View style={{ flex: 1, gap: 6 }}>
-            <ServerStatusLine quietWhenOnline />
-            {loopLine}
-            {readout}
-          </View>
-          <View style={{ width: 440 }}>
-            <LiveScale liveHz={practice.liveHz} a4={settings.referencePitchHz} />
-          </View>
+        <View style={[styles.bandRow, { paddingHorizontal: g }]}>
+          <View style={{ flex: 1, minWidth: 220 }}>{readout}</View>
+          <View style={{ flex: 1.2, maxWidth: 420 }}>{scale}</View>
           <View style={styles.controls}>
             {jumpControl}
             {finishButton}
           </View>
         </View>
       ) : (
-        <View style={{ paddingHorizontal: g, paddingTop: 18, paddingBottom: 26, gap: 14 }}>
-          <ServerStatusLine quietWhenOnline />
-            {loopLine}
-          {readout}
-          <LiveScale liveHz={practice.liveHz} a4={settings.referencePitchHz} />
+        <View style={{ paddingHorizontal: g, paddingTop: 4, paddingBottom: 10, gap: 4 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <View style={{ flex: 1, minWidth: 0 }}>{readout}</View>
+            <View style={{ width: '46%' }}>{scale}</View>
+          </View>
           <View style={[styles.controls, { justifyContent: 'space-between' }]}>
             {jumpControl}
             {finishButton}
           </View>
         </View>
       )}
-      {jumpMessage ? <Text style={[styles.jumpMessage, { paddingHorizontal: g }]}>{jumpMessage}</Text> : null}
     </Wood>
   );
 
   return (
     <Screen layout={layout} edges={['top']}>
       <View style={{ flex: 1 }}>
-        <View style={[styles.header, { paddingLeft: g - 10, paddingRight: g }, tablet && { paddingTop: 24 }]}>
-          <View style={{ flex: 1, gap: tablet ? 8 : 0 }}>
-            <BackLink label={tablet ? 'Library' : piece.title} onPress={() => router.back()} />
+        <View style={[styles.header, { paddingLeft: g - 10, paddingRight: g }]}>
+          <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 18 }}>
+            <BackLink label={tablet ? 'Music' : piece.title} onPress={() => router.back()} />
             {tablet ? (
-              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 18, paddingLeft: 10 }}>
-                <Display size={52} numberOfLines={1}>{piece.title}</Display>
-                {piece.composer ? <Text style={styles.composer}>{piece.composer}</Text> : null}
+              <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'baseline', gap: 14 }}>
+                <Display size={28} numberOfLines={1} style={{ flexShrink: 1 }}>{piece.title}</Display>
+                {piece.composer ? <Text style={styles.composer} numberOfLines={1}>{piece.composer}</Text> : null}
               </View>
             ) : null}
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-            <Display size={tablet ? 52 : 30}>{bar ?? '—'}</Display>
+            <Text style={styles.of}>Bar</Text>
+            <Display size={tablet ? 30 : 24}>{bar ?? '·'}</Display>
             <Text style={styles.of}>of {measureCount}</Text>
           </View>
         </View>
-        <Progress value={bar && measureCount ? bar / measureCount : 0} style={{ marginHorizontal: g, marginBottom: 14 }} />
+        <Progress value={bar && measureCount ? bar / measureCount : 0} style={{ marginHorizontal: g, marginBottom: 8 }} />
         <ScoreView
           ref={score}
           xml={piece.xml}
           theme={theme}
           onEvent={onEngine}
-          style={[styles.score, { marginHorizontal: tablet ? 48 : 12 }, theme === 'paper' && paperSheet]}
+          style={[styles.score, { marginHorizontal: tablet ? 24 : 8 }, theme === 'paper' && paperSheet]}
         />
         {band}
       </View>
@@ -265,7 +269,7 @@ function LiveReadout({ liveHz, a4, statusLine, tablet }: { liveHz: LiveValue<num
   return (
     <View style={styles.readout}>
       <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 14, flex: 1, minWidth: 0 }}>
-        {note ? <Display size={tablet ? 88 : 64} style={{ lineHeight: tablet ? 90 : 66 }}>{note.name}</Display> : null}
+        {note ? <Display size={tablet ? 52 : 40}>{note.name}</Display> : null}
         <Text style={[styles.caption, statusLine ? styles.captionStatus : null]} numberOfLines={2}>{caption}</Text>
       </View>
       {cents !== null ? <Text style={styles.cents}>{cents >= 0 ? '+' : '−'}{Math.abs(cents)}¢</Text> : null}
@@ -279,23 +283,23 @@ function LiveScale({ liveHz, a4 }: { liveHz: LiveValue<number | null>; a4: numbe
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'flex-end', gap: 16, paddingTop: 8, paddingBottom: 10 },
-  composer: { fontFamily: fonts.serif, fontSize: 19, color: colors.soft },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingTop: 4, paddingBottom: 6 },
+  composer: { flexShrink: 0, fontFamily: fonts.serif, fontSize: 15, color: colors.soft },
   of: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 3, textTransform: 'uppercase', color: colors.muted },
-  score: { flex: 1, marginBottom: 18 },
-  bandPhone: {},
-  bandTablet: { minHeight: 230 },
-  bandTabletInner: { flexDirection: 'row', alignItems: 'center', gap: 40, paddingTop: 34, paddingBottom: 40 },
-  readout: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 },
-  caption: { flexShrink: 1, fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 3, textTransform: 'uppercase', color: colors.cream, paddingBottom: 8 },
-  captionStatus: { fontFamily: fonts.display, fontSize: 19, lineHeight: 26, letterSpacing: 0, textTransform: 'none', paddingBottom: 2 },
-  cents: { fontFamily: fonts.display, fontSize: 22, color: colors.goldBright, paddingBottom: 8 },
-  loopLine: { gap: 6 },
+  score: { flex: 1, marginBottom: 8 },
+  notices: { gap: 4, paddingTop: 8 },
+  bandRow: { flexDirection: 'row', alignItems: 'center', gap: 32, paddingTop: 4, paddingBottom: 12 },
+  readout: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, minHeight: 52 },
+  caption: { flexShrink: 1, fontFamily: fonts.sansMedium, fontSize: 9.5, letterSpacing: 2.5, textTransform: 'uppercase', color: colors.cream },
+  captionStatus: { fontFamily: fonts.display, fontSize: 16, lineHeight: 21, letterSpacing: 0, textTransform: 'none' },
+  cents: { fontFamily: fonts.display, fontSize: 20, color: colors.goldBright },
+  loopLine: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 },
   passOld: { fontFamily: fonts.serif, fontSize: 18, color: colors.muted },
-  passLast: { fontFamily: fonts.display, fontSize: 30, color: colors.bright },
+  passLast: { fontFamily: fonts.display, fontSize: 22, color: colors.bright },
   passOf: { fontFamily: fonts.sansLight, fontSize: 12, color: colors.cream },
-  controls: { flexDirection: 'row', alignItems: 'center', gap: 32 },
+  finish: { minHeight: 40, paddingHorizontal: 22 },
+  controls: { flexDirection: 'row', alignItems: 'center', gap: 24 },
   jump: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   jumpInput: { width: 64, height: 44, borderBottomWidth: 1, borderBottomColor: colors.gold, color: colors.bright, fontFamily: fonts.display, fontSize: 22, textAlign: 'center' },
-  jumpMessage: { fontFamily: fonts.sansLight, fontSize: 12, color: colors.soft, paddingBottom: 12, marginTop: -14 },
+  jumpMessage: { fontFamily: fonts.sansLight, fontSize: 12, color: colors.soft },
 });

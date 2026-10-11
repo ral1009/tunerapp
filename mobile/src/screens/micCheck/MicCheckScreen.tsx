@@ -35,7 +35,7 @@ export function MicCheckScreen({ layout }: { layout: LayoutMode }) {
         </View>
         <View style={{ paddingHorizontal: g, marginTop: tablet ? 90 : 64, gap: 10, maxWidth: 640 }}>
           <Eyebrow tone="bright">Microphone</Eyebrow>
-          <Display size={tablet ? 60 : 44} style={{ lineHeight: tablet ? 62 : 46 }}>Let&rsquo;s hear your violin</Display>
+          <Display size={tablet ? 60 : 44}>Let&rsquo;s hear your violin</Display>
         </View>
         <MicLive tuner={tuner} a4={a4} g={g} tablet={tablet} />
       </ScrollView>

@@ -30,6 +30,10 @@ const html = `<!doctype html>
   html, body { margin: 0; padding: 0; background: #FAF7F0; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
   #wrap { position: relative; padding: 8px 4px 40px; }
   #score { position: relative; }
+  /* Page layout: each OSMD page (a div holding one svg) as a sheet on the dark ground. */
+  body.pages #wrap { padding: 16px 0 40px; }
+  body.pages #score { margin: 0 auto; }
+  body.pages #score > div { background: var(--page); margin-bottom: 24px; box-shadow: 0 18px 40px rgba(0,0,0,0.55); }
   #overlay { position: absolute; left: 4px; top: 8px; right: 4px; bottom: 40px; pointer-events: none; z-index: 2; }
 </style></head>
 <body><div id="wrap"><div id="overlay"></div><div id="score"></div></div>

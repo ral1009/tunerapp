@@ -133,6 +133,9 @@ def parse(image_path: Path, timeout: float) -> Path:
     result = subprocess.run([*UVX_HOMR, "homr", str(image_path)], capture_output=True, timeout=timeout, text=True)
     if result.returncode != 0:
         raise HomrError(f"homr exited with code {result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}")
+    own = image_path.with_suffix(".musicxml")
+    if own.exists():  # a multi-page PDF puts several pages in one folder
+        return own
     candidates = sorted(image_path.parent.glob("*.musicxml"))
     if not candidates:
         raise HomrError(f"homr produced no .musicxml output\nstdout: {result.stdout}\nstderr: {result.stderr}")

@@ -8,7 +8,7 @@ import { ScoreError } from './ScoreError';
 import type { ScoreViewHandle, ScoreViewProps } from './ScoreView';
 
 // Web build: the same score engine page in an iframe (react-native-webview has no web support).
-export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function ScoreView({ xml, theme, render = true, onEvent, style }, ref) {
+export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function ScoreView({ xml, theme, render = true, layout = 'scroll', onEvent, style }, ref) {
   const frame = useRef<HTMLIFrameElement | null>(null);
   const ready = useRef(false);
   const queue = useRef<EngineCommand[]>([]);
@@ -53,9 +53,9 @@ export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function Sc
   }, [send]);
 
   useEffect(() => {
-    send({ type: 'load', xml, theme, render });
+    send({ type: 'load', xml, theme, render, layout });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [xml, render, send]);
+  }, [xml, render, layout, send]);
   useEffect(() => {
     send({ type: 'theme', theme });
   }, [theme, send]);

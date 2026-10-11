@@ -43,6 +43,12 @@ export interface ScoreRenderOptions {
   musicColor?: string;
   // Part names ("Violin", or OMR's guess "Voice") before the first system. Default shown.
   drawPartNames?: boolean;
+  // OSMD page format, e.g. "A4_P": separate printed pages (one <svg> each) instead of one endless
+  // strip. Each page is scaled to the container's width.
+  pageFormat?: string;
+  // Cursor colour, set when OSMD builds the cursor: changing CursorOptions afterwards only takes
+  // effect when the cursor's width changes, so the default green stayed on screen.
+  cursorColor?: string;
 }
 
 // Rewrites <work-title> and <identification><creator type="composer"> (creating either if
@@ -147,6 +153,8 @@ export async function renderScore(
     drawComposer: options.drawComposer ?? true,
     ...(options.musicColor ? { defaultColorMusic: options.musicColor } : {}),
     drawPartNames: options.drawPartNames ?? true,
+    ...(options.pageFormat ? { pageFormat: options.pageFormat } : {}),
+    ...(options.cursorColor ? { cursorsOptions: [{ type: 0, color: options.cursorColor, alpha: 0.5, follow: true }] } : {}),
     onXMLRead: (xml: string) => {
       const withMetadata = applyMetadataOverrides(xml, options.titleOverride, options.composerOverride);
       // Applied before the beam-data check below so any measure-level correction is what
@@ -177,18 +185,23 @@ export async function renderScore(
   return {
     cursor,
     getMeasureBoxes() {
-      const svg = container.querySelector("svg");
-      if (!svg || !osmd.GraphicSheet) return [];
-      const svgRect = svg.getBoundingClientRect();
+      // One <svg> per page with a page format, one in total without; a bar's position is relative
+      // to its own page.
+      const svgs = Array.from(container.querySelectorAll("svg"));
+      if (svgs.length === 0 || !osmd.GraphicSheet) return [];
       const containerRect = container.getBoundingClientRect();
-      const offsetX = svgRect.left - containerRect.left;
-      const offsetY = svgRect.top - containerRect.top;
+      const pages = osmd.GraphicSheet.MusicPages;
       const scale = OSMD_UNIT_PX * osmd.zoom;
       const boxes: MeasureBox[] = [];
       osmd.GraphicSheet.MeasureList.forEach((staves, measureIndex) => {
         // One box per bar spanning all its staves (a single violin staff in practice).
-        const shapes = staves.filter((measure) => measure?.PositionAndShape).map((measure) => measure.PositionAndShape);
+        const present = staves.filter((measure) => measure?.PositionAndShape);
+        const shapes = present.map((measure) => measure.PositionAndShape);
         if (shapes.length === 0) return;
+        const pageIndex = Math.max(0, pages.indexOf(present[0].ParentMusicSystem?.Parent));
+        const svgRect = (svgs[pageIndex] ?? svgs[0]).getBoundingClientRect();
+        const offsetX = svgRect.left - containerRect.left;
+        const offsetY = svgRect.top - containerRect.top;
         const left = Math.min(...shapes.map((b) => b.AbsolutePosition.x + b.BorderLeft));
         const right = Math.max(...shapes.map((b) => b.AbsolutePosition.x + b.BorderRight));
         // A bar's own box covers just its staff lines; extend a little so notes above/below the

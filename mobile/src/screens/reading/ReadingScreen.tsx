@@ -8,50 +8,73 @@ import type { EngineEvent } from '@core/score/engine/protocol';
 import { BackLink, Body, Display, Eyebrow, GoldButton, Progress, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { serverUrl } from '@/config/server';
 import { useLibrary } from '@/data/libraryStore';
-import { takePendingUpload, type PendingUpload } from '@/data/pendingUpload';
+import { takePendingUpload, type PendingUpload, type UploadFile } from '@/data/pendingUpload';
 import { ScoreView } from '@/score/ScoreView';
 import type { LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 
-// Photo reading on the server takes ~25-30 s for a full page (CLAUDE.md, HOMR speed pass); the
-// progress line is an estimate against that, since the server doesn't report progress.
-const EXPECTED_SECONDS = 28;
+// Photo reading on the server takes ~25-30 s for a full page (CLAUDE.md, HOMR speed pass). The
+// server says which page it's on; within a page the progress line is an estimate against this.
+const SECONDS_PER_PAGE = 28;
 
 type Phase = 'sending' | 'reading' | 'checking' | 'done' | 'error';
 
-async function readMusicXml(upload: PendingUpload): Promise<string> {
+async function readMusicXml(upload: Extract<PendingUpload, { kind: 'musicxml' }>): Promise<string> {
   if (upload.file) return upload.file.text();
   const response = await fetch(upload.uri);
   return response.text();
 }
 
 // Phone photos are 12+ megapixels and may be HEIC; HOMR reads a 1300×1700 JPEG perfectly well.
-// Shrinking to this long edge and re-encoding as JPEG makes the upload a few hundred KB.
+// Shrinking to this long edge and re-encoding as JPEG makes each page a few hundred KB.
 const MAX_PHOTO_EDGE = 2200;
-const UPLOAD_TIMEOUT_MS = 45000;
+// One request carries every page.
+const UPLOAD_TIMEOUT_MS = 90000;
 const POLL_MS = 1500;
 const POLL_FAILURES_ALLOWED = 6;
 
-async function preparePhoto(upload: PendingUpload): Promise<{ uri: string; name: string; type: string }> {
-  const first = await ImageManipulator.manipulate(upload.uri).renderAsync();
-  const longEdge = Math.max(first.width, first.height);
-  const image = longEdge > MAX_PHOTO_EDGE
-    ? await ImageManipulator.manipulate(upload.uri).resize(first.width >= first.height ? { width: MAX_PHOTO_EDGE } : { height: MAX_PHOTO_EDGE }).renderAsync()
-    : first;
-  const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.85 });
-  return { uri: saved.uri, name: 'page.jpg', type: 'image/jpeg' };
+async function preparePhoto(file: UploadFile, n: number): Promise<{ uri: string; name: string; type: string }> {
+  try {
+    const first = await ImageManipulator.manipulate(file.uri).renderAsync();
+    const longEdge = Math.max(first.width, first.height);
+    const image = longEdge > MAX_PHOTO_EDGE
+      ? await ImageManipulator.manipulate(file.uri).resize(first.width >= first.height ? { width: MAX_PHOTO_EDGE } : { height: MAX_PHOTO_EDGE }).renderAsync()
+      : first;
+    const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.85 });
+    return { uri: saved.uri, name: `page-${n}.jpg`, type: 'image/jpeg' };
+  } catch {
+    // A format the phone can't decode itself (a RAW DNG on some Android phones): the server
+    // converts it instead.
+    return { uri: file.uri, name: file.name, type: file.mimeType || 'application/octet-stream' };
+  }
+}
+
+// One form field per file, in page order. React Native's FormData takes a { uri, name, type }
+// descriptor for a local file; the web build has the browser's File.
+async function buildForm(files: UploadFile[]): Promise<FormData> {
+  const form = new FormData();
+  for (const [i, f] of files.entries()) {
+    if (f.file) form.append('file', f.file, f.name);
+    else if (f.kind === 'pdf') {
+      const name = f.name.toLowerCase().endsWith('.pdf') ? f.name : `${f.name}.pdf`;
+      form.append('file', { uri: f.uri, name, type: 'application/pdf' } as unknown as Blob);
+    } else form.append('file', (await preparePhoto(f, i + 1)) as unknown as Blob);
+  }
+  return form;
+}
+
+interface ReadProgress {
+  page: number;
+  pages: number;
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Photo reading runs as a job on the server: upload, then ask how it's going until it's done. One
-// long request used to carry the whole read, and a phone drops a request after about a minute --
-// a big photo can take HOMR longer than that -- losing the read with no explanation.
-async function readPhoto(upload: PendingUpload, isCancelled: () => boolean): Promise<string> {
-  const form = new FormData();
-  if (upload.file) form.append('file', upload.file, upload.name);
-  // React Native's FormData takes a { uri, name, type } descriptor for a local file.
-  else form.append('file', (await preparePhoto(upload)) as unknown as Blob);
+// Reading runs as a job on the server: upload every page, then ask how it's going until it's done.
+// One long request used to carry the whole read, and a phone drops a request after about a minute
+// -- a big photo can take HOMR longer than that -- losing the read with no explanation.
+async function readPages(files: UploadFile[], isCancelled: () => boolean, onProgress: (p: ReadProgress) => void): Promise<string> {
+  const form = await buildForm(files);
   const base = serverUrl();
   let jobId: string;
   const controller = new AbortController();
@@ -59,10 +82,10 @@ async function readPhoto(upload: PendingUpload, isCancelled: () => boolean): Pro
   try {
     const response = await fetch(`${base}/api/parse-sheet/jobs`, { method: 'POST', body: form, signal: controller.signal });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok || !body.jobId) throw new Error(body.error ?? `The server didn't accept the photo (${response.status}).`);
+    if (!response.ok || !body.jobId) throw new Error(body.error ?? `The server didn't accept the pages (${response.status}).`);
     jobId = body.jobId;
   } catch (e) {
-    if (e instanceof Error && e.name === 'AbortError') throw new Error(`Sending the photo to ${base} took too long. Is the laptop's Wi-Fi connection slow?`);
+    if (e instanceof Error && e.name === 'AbortError') throw new Error(`Sending the pages to ${base} took too long. Is the laptop's Wi-Fi connection slow?`);
     if (e instanceof TypeError) throw new Error(`Couldn't reach the server at ${base}. Is it running, and is the phone on the same Wi-Fi?`);
     throw e;
   } finally {
@@ -76,12 +99,13 @@ async function readPhoto(upload: PendingUpload, isCancelled: () => boolean): Pro
       const response = await fetch(`${base}/api/parse-sheet/jobs/${jobId}`);
       const body = await response.json();
       failures = 0;
+      if (body.pages) onProgress({ page: body.page, pages: body.pages });
       if (body.status === 'done' && body.xmlData) return body.xmlData as string;
-      if (body.status === 'error' || !response.ok) throw new Error(body.error ?? 'The photo couldn’t be read.');
+      if (body.status === 'error' || !response.ok) throw new Error(body.error ?? 'The pages couldn’t be read.');
     } catch (e) {
       if (!(e instanceof TypeError)) throw e;
       failures += 1;
-      if (failures > POLL_FAILURES_ALLOWED) throw new Error(`Lost the connection to the server at ${base} while it was reading the photo.`);
+      if (failures > POLL_FAILURES_ALLOWED) throw new Error(`Lost the connection to the server at ${base} while it was reading.`);
     }
   }
 }
@@ -92,19 +116,37 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
   const library = useLibrary();
   const [upload] = useState(() => takePendingUpload());
   const [phase, setPhase] = useState<Phase>(upload ? 'sending' : 'error');
-  const [error, setError] = useState<string | null>(upload ? null : 'Nothing to read. Go back and choose a page or a file.');
+  const [error, setError] = useState<string | null>(upload ? null : 'Nothing to read. Go back and add a page or a file.');
   const [xml, setXml] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [progress, setProgress] = useState<ReadProgress | null>(null);
+  // When (in elapsed seconds) the server started the page it's on.
+  const [pageStartedAt, setPageStartedAt] = useState(0);
   const addedRef = useRef(false);
+  const isMusicXml = upload?.kind === 'musicxml';
+  const fileCount = upload?.kind === 'pages' ? upload.files.length : 1;
 
   useEffect(() => {
     if (!upload) return;
     let cancelled = false;
     const started = Date.now();
+    let lastPage = 0;
     const timer = setInterval(() => setElapsed((Date.now() - started) / 1000), 500);
+    const onProgress = (p: ReadProgress) => {
+      if (p.page !== lastPage) {
+        lastPage = p.page;
+        setPageStartedAt((Date.now() - started) / 1000);
+      }
+      setProgress(p);
+    };
     (async () => {
       try {
-        const text = upload.kind === 'musicxml' ? await readMusicXml(upload) : (setPhase('reading'), await readPhoto(upload, () => cancelled));
+        let text: string;
+        if (upload.kind === 'musicxml') text = await readMusicXml(upload);
+        else {
+          setPhase('reading');
+          text = await readPages(upload.files, () => cancelled, onProgress);
+        }
         if (cancelled) return;
         setXml(text);
         setPhase('checking');
@@ -130,31 +172,47 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
     }
     if (event.type !== 'loaded' || addedRef.current || !xml || !upload) return;
     addedRef.current = true;
-    const title = event.meta.title && event.meta.title !== 'Untitled' ? event.meta.title : upload.name.replace(/\.[^.]+$/, '') || 'New piece';
+    // A new score keeps the name the player gave it; a file keeps its own printed title.
+    const printed = event.meta.title && event.meta.title !== 'Untitled' ? event.meta.title : null;
+    const title = upload.kind === 'pages' ? upload.title : printed ?? (upload.name.replace(/\.[^.]+$/, '') || 'New piece');
     const id = library.add({
       title,
       composer: event.meta.composer,
       xml,
-      source: upload.kind === 'image' ? 'photo' : 'file',
+      source: upload.kind === 'pages' ? 'photo' : 'file',
       measureCount: event.meta.measureCount,
       measureIssues: event.meta.measureIssues,
     });
     setPhase('done');
-    router.replace({ pathname: '/piece/[id]', params: { id } });
+    // Straight to the music.
+    router.replace({ pathname: '/score/[id]', params: { id } });
   };
 
-  const fraction = phase === 'reading' ? Math.min(0.95, elapsed / EXPECTED_SECONDS) : phase === 'sending' ? 0.04 : phase === 'error' ? 0 : 1;
-  const left = Math.max(0, Math.round(EXPECTED_SECONDS - elapsed));
+  // Pages as the server counts them (a PDF can hold several); until it answers, one per file.
+  const pages = progress?.pages ?? fileCount;
+  const page = progress?.page ?? 1;
+  const withinPage = Math.min(0.95, Math.max(0, elapsed - pageStartedAt) / SECONDS_PER_PAGE);
+  const fraction = phase === 'reading' ? Math.min(0.97, (page - 1 + withinPage) / pages) : phase === 'sending' ? 0.04 : phase === 'error' ? 0 : 1;
+  const left = Math.max(0, Math.round((pages - page + 1 - withinPage) * SECONDS_PER_PAGE));
   const steps = [
-    { label: upload?.kind === 'musicxml' ? 'Opened the file' : 'Sent the page', state: phase === 'sending' ? 'now' : 'done' },
-    { label: 'Reading the notes, staff by staff', state: phase === 'reading' ? 'now' : phase === 'sending' ? 'next' : 'done' },
-    { label: 'Checking every bar adds up', state: phase === 'checking' ? 'now' : phase === 'done' ? 'done' : 'next' },
-  ].filter((s) => upload?.kind !== 'musicxml' || !s.label.startsWith('Reading the notes'));
+    { label: isMusicXml ? 'Opened the file' : fileCount > 1 ? `Sent the ${fileCount} files` : 'Sent the page', state: phase === 'sending' ? 'now' : 'done' },
+    { label: pages > 1 ? 'Reading the notes, page by page' : 'Reading the notes, staff by staff', state: phase === 'reading' ? 'now' : phase === 'sending' ? 'next' : 'done' },
+    { label: pages > 1 ? 'Joining the pages, checking every bar' : 'Checking every bar adds up', state: phase === 'checking' ? 'now' : phase === 'done' ? 'done' : 'next' },
+  ].filter((s) => !isMusicXml || !s.label.startsWith('Reading the notes'));
 
   const staffWords = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
-  const staff = Math.min(7, Math.floor(fraction * 8));
+  const staff = Math.min(7, Math.floor((pages > 1 ? withinPage : fraction) * 8));
   const headline =
-    phase === 'reading' ? `Staff ${staffWords[staff]} of eight` : phase === 'checking' ? 'Checking every bar' : phase === 'done' ? 'Done' : 'Opening';
+    phase === 'reading'
+      ? pages > 1
+        ? `Page ${page} of ${pages}`
+        : `Staff ${staffWords[staff]} of eight`
+      : phase === 'checking'
+        ? 'Checking every bar'
+        : phase === 'done'
+          ? 'Done'
+          : 'Opening';
+  const timeLeft = left >= 90 ? `About ${Math.round(left / 60)} minutes left` : left > 0 ? `About ${left} seconds left` : 'Still reading — a large page can take a minute or two';
   const pageW = tablet ? 300 : 246;
   const pageH = tablet ? 410 : 340;
 
@@ -177,7 +235,8 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
               ))}
             </View>
           ))}
-          {phase !== 'error' && phase !== 'done' ? <View style={[styles.scan, { top: `${14 + fraction * 80}%` }]} /> : null}
+          {phase !== 'error' && phase !== 'done' ? <View style={[styles.scan, { top: `${14 + (pages > 1 ? withinPage : fraction) * 80}%` }]} /> : null}
+          {pages > 1 ? <Text style={styles.pageNo}>{page}</Text> : null}
         </View>
       </View>
 
@@ -188,13 +247,13 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
             <Body>{error}</Body>
             <View style={{ flexDirection: 'row', gap: 28, alignItems: 'center' }}>
               <TextButton label="Back" onPress={() => router.back()} />
-              <GoldButton label="Try another page" onPress={() => router.replace('/add-music')} />
+              <GoldButton label="Start again" onPress={() => router.replace(isMusicXml ? '/add-music' : '/new-score')} />
             </View>
           </>
         ) : (
           <>
             <View style={{ gap: 8 }}>
-              <Eyebrow>{upload?.kind === 'musicxml' ? 'Opening your file' : 'Reading your page'}</Eyebrow>
+              <Eyebrow>{isMusicXml ? 'Opening your file' : upload?.kind === 'pages' ? `Reading ${upload.title}` : 'Reading'}</Eyebrow>
               <Display size={tablet ? 40 : 30}>{headline}</Display>
             </View>
             <Progress value={fraction} />
@@ -206,7 +265,7 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
                 </View>
               ))}
             </View>
-            <Text style={styles.left}>{phase === 'reading' ? (left > 0 ? `About ${left} seconds left` : 'Still reading — a large page can take a minute or two') : 'You can tune up while you wait'}</Text>
+            <Text style={styles.left}>{phase === 'reading' ? timeLeft : 'You can tune up while you wait'}</Text>
           </>
         )}
       </View>
@@ -218,6 +277,7 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
 const styles = StyleSheet.create({
   page: { backgroundColor: '#F3EEE2', transform: [{ rotate: '-1.6deg' }], shadowColor: '#000', shadowOpacity: 0.65, shadowRadius: 26, shadowOffset: { width: 0, height: 26 }, elevation: 12, overflow: 'hidden' },
   scan: { position: 'absolute', left: 10, right: 10, height: 2, backgroundColor: colors.goldBright, shadowColor: colors.goldBright, shadowOpacity: 0.8, shadowRadius: 10 },
+  pageNo: { position: 'absolute', bottom: 10, alignSelf: 'center', fontFamily: fonts.display, fontSize: 14, color: 'rgba(20,17,14,0.6)' },
   step: { flexDirection: 'row', alignItems: 'baseline', gap: 14 },
   mark: { width: 14, fontFamily: fonts.sans, fontSize: 12 },
   stepText: { fontFamily: fonts.sansLight, fontSize: 14 },

@@ -1,6 +1,11 @@
 fastapi
 uvicorn[standard]
 python-multipart
+# Uploads HOMR (OpenCV) can't open itself: PDF pages (pdfium), iPhone HEIC (pillow-heif; Pillow
+# reads AVIF on its own), and RAW DNG photos (rawpy). See page_images.py.
+pypdfium2
+pillow-heif
+rawpy
 # Real-time score following. Installed from source at a pinned tag rather than from PyPI: the
 # matchmaker-demo reference app this integration follows builds against the repo, and the source
 # install keeps us on exactly the revision whose BytesAudioStream/stream= contract was read and

@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { View, type StyleProp, type ViewStyle } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
-import type { EngineCommand, EngineEvent, ScoreTheme } from '@core/score/engine/protocol';
+import type { EngineCommand, EngineEvent, ScoreLayout, ScoreTheme } from '@core/score/engine/protocol';
 
 import { SCORE_ENGINE_HTML } from './engineHtml.generated';
 import { ScoreError } from './ScoreError';
@@ -16,13 +16,15 @@ export interface ScoreViewProps {
   theme: ScoreTheme;
   // false: read the score (title, bars, misread bars) without drawing it.
   render?: boolean;
+  // "pages": printed pages sized to fit the screen (reading); default "scroll" (practising).
+  layout?: ScoreLayout;
   onEvent?: (event: EngineEvent) => void;
   style?: StyleProp<ViewStyle>;
 }
 
 // Sheet music via the score engine (score/engine) in a WebView. Commands sent before the page
 // says it's ready are queued; the score loads whenever `xml` changes and re-themes on `theme`.
-export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function ScoreView({ xml, theme, render = true, onEvent, style }, ref) {
+export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function ScoreView({ xml, theme, render = true, layout = 'scroll', onEvent, style }, ref) {
   const webview = useRef<WebView>(null);
   const ready = useRef(false);
   const queue = useRef<EngineCommand[]>([]);
@@ -42,10 +44,10 @@ export const ScoreView = forwardRef<ScoreViewHandle, ScoreViewProps>(function Sc
   useImperativeHandle(ref, () => ({ send }), [send]);
 
   useEffect(() => {
-    send({ type: 'load', xml, theme, render });
+    send({ type: 'load', xml, theme, render, layout });
     // Theme changes after load go through the effect below without reloading the score.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [xml, render, send]);
+  }, [xml, render, layout, send]);
   useEffect(() => {
     send({ type: 'theme', theme });
   }, [theme, send]);

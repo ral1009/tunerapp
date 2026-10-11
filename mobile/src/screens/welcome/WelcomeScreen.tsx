@@ -17,7 +17,7 @@ export function WelcomeScreen({ layout }: { layout: LayoutMode }) {
         </View>
         <View style={styles.fill} />
         <View style={[styles.copy, tablet && { maxWidth: 560 }]}>
-          <Display size={tablet ? 96 : 58} style={{ lineHeight: tablet ? 96 : 58 }}>Play it in tune.</Display>
+          <Display size={tablet ? 96 : 58}>Play it in tune.</Display>
           <Text style={[styles.body, tablet && { fontSize: 18, lineHeight: 30 }]}>
             Bring your music and play it through. Afterwards you&rsquo;ll see exactly which notes drifted — and you can loop the bars that need you.
           </Text>

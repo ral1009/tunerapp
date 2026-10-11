@@ -1,54 +1,23 @@
 import * as DocumentPicker from 'expo-document-picker';
-import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Arrow, BackLink, Body, Display, Eyebrow, Purfling, Screen, Serif, useGutter, Wood } from '@/components/ui';
 import { ServerStatusLine } from '@/components/ServerStatus';
 import { useLibrary } from '@/data/libraryStore';
-import { setPendingUpload } from '@/data/pendingUpload';
+import { setPendingUpload, uploadKindOf } from '@/data/pendingUpload';
 import type { LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { Tappable } from '@/components/Tappable';
 
-// Add a piece: photograph a page, choose a photo, or choose a MusicXML file. A photo goes to the
-// server's photo reading; MusicXML is used as-is. Either way the next stop is Reading.
+// Add a piece: a new score (name it, then photograph or add each page -- see New score), or open a
+// file (MusicXML is used as-is; a PDF or photo is read like a new score's pages).
 export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
   const tablet = layout === 'tablet';
   const g = useGutter(layout);
   const [message, setMessage] = useState<string | null>(null);
   const library = useLibrary();
-
-  const sendPhoto = (asset: ImagePicker.ImagePickerAsset) => {
-    setPendingUpload({
-      kind: 'image',
-      uri: asset.uri,
-      name: asset.fileName ?? 'page.jpg',
-      mimeType: asset.mimeType ?? 'image/jpeg',
-      file: (asset as { file?: File }).file,
-    });
-    router.push('/reading');
-  };
-
-  const takePhoto = async () => {
-    setMessage(null);
-    if (Platform.OS !== 'web') {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        setMessage('Camera access is off. You can choose a photo instead, or allow the camera in Settings.');
-        return;
-      }
-    }
-    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.9 });
-    if (!result.canceled && result.assets[0]) sendPhoto(result.assets[0]);
-  };
-
-  const choosePhoto = async () => {
-    setMessage(null);
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.9 });
-    if (!result.canceled && result.assets[0]) sendPhoto(result.assets[0]);
-  };
 
   const chooseFile = async () => {
     setMessage(null);
@@ -57,19 +26,25 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
     const asset = result.assets[0];
     const name = asset.name.toLowerCase();
     const isXml = name.endsWith('.musicxml') || name.endsWith('.xml') || (asset.mimeType ?? '').includes('xml');
-    const isImage = (asset.mimeType ?? '').startsWith('image/') || /\.(jpe?g|png|heic|webp)$/.test(name);
-    if (!isXml && !isImage) {
-      setMessage('That file type isn’t supported yet. Choose a photo of the page or a MusicXML file.');
+    const kind = uploadKindOf(asset.name, asset.mimeType ?? '');
+    if (!isXml && kind) {
+      // A PDF or photo opened here becomes a new score named after the file.
+      setPendingUpload({ kind: 'pages', title: asset.name.replace(/\.[^.]+$/, '') || 'New score', files: [{ kind, uri: asset.uri, name: asset.name, mimeType: asset.mimeType ?? '', file: asset.file }] });
+      router.push('/reading');
       return;
     }
-    setPendingUpload({ kind: isXml ? 'musicxml' : 'image', uri: asset.uri, name: asset.name, mimeType: asset.mimeType ?? '', file: asset.file });
+    if (!isXml) {
+      setMessage('That file type isn’t supported. Choose a MusicXML file, a PDF or a photo.');
+      return;
+    }
+    setPendingUpload({ kind: 'musicxml', uri: asset.uri, name: asset.name, mimeType: asset.mimeType ?? '', file: asset.file });
     router.push('/reading');
   };
 
   const starters = library.pieces.filter((p) => p.source === 'sample');
 
   const photoPanel = (
-    <Tappable onPress={takePhoto} accessibilityRole="button" accessibilityLabel="Photograph a page" style={[styles.photo, tablet && { height: 420 }]}>
+    <Tappable onPress={() => router.push('/new-score')} haptic accessibilityRole="button" accessibilityLabel="New score: name it, then photograph each page" style={[styles.photo, tablet && { height: 420 }]}>
       <Wood variant="hero" style={StyleSheet.absoluteFill} />
       <Purfling />
       <View style={styles.camera} accessibilityElementsHidden>
@@ -78,26 +53,19 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
         <View style={styles.cameraHump} />
       </View>
       <View style={styles.photoText}>
-        <Eyebrow tone="bright">Photograph a page</Eyebrow>
-        <Display size={tablet ? 34 : 26} style={{ lineHeight: tablet ? 38 : 30 }}>The part on your music stand</Display>
-        <Text style={styles.photoBody}>We read the notes from the photo in about half a minute. Anything we misread, you can fix.</Text>
+        <Eyebrow tone="bright">New score</Eyebrow>
+        <Display size={tablet ? 34 : 26}>The part on your music stand</Display>
+        <Text style={styles.photoBody}>Name it, then photograph each page. We read the notes and put the pages together into one score, about half a minute a page. Anything we misread, you can fix.</Text>
       </View>
     </Tappable>
   );
 
   const others = (
     <View style={{ gap: 0 }}>
-      <Tappable onPress={choosePhoto} accessibilityRole="button" style={styles.option}>
-        <View style={{ flex: 1, gap: 6 }}>
-          <Serif size={20}>Choose a photo</Serif>
-          <Text style={styles.hint}>A picture of the page you already have.</Text>
-        </View>
-        <Arrow />
-      </Tappable>
       <Tappable onPress={chooseFile} accessibilityRole="button" style={styles.option}>
         <View style={{ flex: 1, gap: 6 }}>
-          <Serif size={20}>Choose a MusicXML file</Serif>
-          <Text style={styles.hint}>Exported from MuseScore, Finale or Sibelius, or downloaded from IMSLP.</Text>
+          <Serif size={20}>Open a file</Serif>
+          <Text style={styles.hint}>MusicXML from MuseScore, Finale or Sibelius, or a PDF from IMSLP.</Text>
         </View>
         <Arrow />
       </Tappable>
