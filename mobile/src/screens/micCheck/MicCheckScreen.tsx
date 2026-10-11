@@ -6,6 +6,7 @@ import { useTuner, useTunerLive, type TunerState } from '@/audio/useTuner';
 import { BackLink, Display, Eyebrow, GoldButton, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { useStayAwake } from '@/components/useStayAwake';
 
 // A quiet room reads well under this raw RMS on every mic we've measured (the web app's calibration
 // floor on the user's laptop sat near 0.0003); above it, noise starts to reach the pitch gate.
@@ -20,6 +21,7 @@ function meterFraction(rms: number): number {
 }
 
 export function MicCheckScreen({ layout }: { layout: LayoutMode }) {
+  useStayAwake('mic-check');
   const tablet = layout === 'tablet';
   const g = useGutter(layout);
   const { settings } = useSettings();

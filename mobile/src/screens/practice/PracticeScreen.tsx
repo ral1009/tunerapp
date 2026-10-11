@@ -18,8 +18,10 @@ import { usePractice, type PracticeResult } from '@/practice/usePractice';
 import { ScoreView, type ScoreViewHandle } from '@/score/ScoreView';
 import { useScoreTheme, useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { useStayAwake } from '@/components/useStayAwake';
 
 export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutMode; id: string; fromBar?: number; toBar?: number }) {
+  useStayAwake('practice');
   const tablet = layout === 'tablet';
   const g = useGutter(layout);
   const library = useLibrary();

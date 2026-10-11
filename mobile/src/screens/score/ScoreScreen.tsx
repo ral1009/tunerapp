@@ -7,11 +7,13 @@ import { useLibrary } from '@/data/libraryStore';
 import { ScoreView } from '@/score/ScoreView';
 import { useScoreTheme, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { useStayAwake } from '@/components/useStayAwake';
 
 // Reading the music: the score on its own, as printed pages on an iPad (each page fits the screen
 // whole when the iPad is upright) and as one continuous strip on a phone. Practise opens the
 // practice screen; Details opens the piece's progress and takes. Annotation will live here later.
 export function ScoreScreen({ layout, id }: { layout: LayoutMode; id: string }) {
+  useStayAwake('score');
   const tablet = layout === 'tablet';
   const g = useGutter(layout);
   const library = useLibrary();

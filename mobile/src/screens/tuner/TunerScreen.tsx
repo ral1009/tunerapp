@@ -6,8 +6,10 @@ import { NavBar } from '@/components/nav';
 import { Display, IntonationScale, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { useStayAwake } from '@/components/useStayAwake';
 
 export function TunerScreen({ layout }: { layout: LayoutMode }) {
+  useStayAwake('tuner');
   const tablet = layout === 'tablet';
   const g = useGutter(layout);
   const { settings } = useSettings();

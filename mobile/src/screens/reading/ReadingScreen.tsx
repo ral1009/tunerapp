@@ -13,6 +13,7 @@ import { takePendingUpload, type PendingUpload, type UploadFile } from '@/data/p
 import { ScoreView } from '@/score/ScoreView';
 import type { LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { useStayAwake } from '@/components/useStayAwake';
 
 // Photo reading on the server takes ~25-30 s for a full page (CLAUDE.md, HOMR speed pass). The
 // server says which page it's on; within a page the progress line is an estimate against this.
@@ -126,6 +127,7 @@ async function readPages(files: UploadFile[], isCancelled: () => boolean, onProg
 }
 
 export function ReadingScreen({ layout }: { layout: LayoutMode }) {
+  useStayAwake('reading');
   const tablet = layout === 'tablet';
   const g = useGutter(layout);
   const library = useLibrary();
