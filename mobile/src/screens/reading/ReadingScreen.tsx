@@ -1,7 +1,7 @@
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 
 import type { EngineEvent } from '@core/score/engine/protocol';
 
@@ -19,8 +19,14 @@ const SECONDS_PER_PAGE = 28;
 
 type Phase = 'sending' | 'reading' | 'checking' | 'done' | 'error';
 
+// The pickers' `file` is a browser File on the web build. On iOS and Android newer Expo pickers
+// return one too (expo-file-system's File), which React Native's FormData can't send ("Unsupported
+// FormDataPart implementation" on an iPad); there only the { uri, name, type } descriptor works.
+const browserFile = (file: File | undefined): File | undefined => (Platform.OS === 'web' ? file : undefined);
+
 async function readMusicXml(upload: Extract<PendingUpload, { kind: 'musicxml' }>): Promise<string> {
-  if (upload.file) return upload.file.text();
+  const file = browserFile(upload.file);
+  if (file) return file.text();
   const response = await fetch(upload.uri);
   return response.text();
 }
@@ -49,12 +55,13 @@ async function preparePhoto(file: UploadFile, n: number): Promise<{ uri: string;
   }
 }
 
-// One form field per file, in page order. React Native's FormData takes a { uri, name, type }
-// descriptor for a local file; the web build has the browser's File.
+// One form field per file, in page order: the browser's File on the web build, a { uri, name,
+// type } descriptor on a device.
 async function buildForm(files: UploadFile[]): Promise<FormData> {
   const form = new FormData();
   for (const [i, f] of files.entries()) {
-    if (f.file) form.append('file', f.file, f.name);
+    const file = browserFile(f.file);
+    if (file) form.append('file', file, f.name);
     else if (f.kind === 'pdf') {
       const name = f.name.toLowerCase().endsWith('.pdf') ? f.name : `${f.name}.pdf`;
       form.append('file', { uri: f.uri, name, type: 'application/pdf' } as unknown as Blob);
