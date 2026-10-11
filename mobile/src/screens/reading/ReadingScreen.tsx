@@ -1,3 +1,4 @@
+import { File as DeviceFile } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
@@ -19,10 +20,17 @@ const SECONDS_PER_PAGE = 28;
 
 type Phase = 'sending' | 'reading' | 'checking' | 'done' | 'error';
 
-// The pickers' `file` is a browser File on the web build. On iOS and Android newer Expo pickers
-// return one too (expo-file-system's File), which React Native's FormData can't send ("Unsupported
-// FormDataPart implementation" on an iPad); there only the { uri, name, type } descriptor works.
+// The pickers' `file` is the browser's File on the web build; on a device the page is read from
+// its uri instead.
 const browserFile = (file: File | undefined): File | undefined => (Platform.OS === 'web' ? file : undefined);
+
+// A form part for a file on the device. Expo SDK 57 replaces fetch with expo/fetch, whose form
+// encoder takes a string, a Blob, or anything with bytes() -- NOT React Native's usual
+// { uri, name, type } descriptor, which fails with "Unsupported FormDataPart implementation"
+// (the iPad error). The bytes are read from the file when the request is sent.
+function devicePart(uri: string, name: string, type: string): Blob {
+  return { name, type, bytes: () => new DeviceFile(uri).bytes() } as unknown as Blob;
+}
 
 async function readMusicXml(upload: Extract<PendingUpload, { kind: 'musicxml' }>): Promise<string> {
   const file = browserFile(upload.file);
@@ -39,7 +47,7 @@ const UPLOAD_TIMEOUT_MS = 90000;
 const POLL_MS = 1500;
 const POLL_FAILURES_ALLOWED = 6;
 
-async function preparePhoto(file: UploadFile, n: number): Promise<{ uri: string; name: string; type: string }> {
+async function preparePhoto(file: UploadFile, n: number): Promise<Blob> {
   try {
     const first = await ImageManipulator.manipulate(file.uri).renderAsync();
     const longEdge = Math.max(first.width, first.height);
@@ -47,16 +55,16 @@ async function preparePhoto(file: UploadFile, n: number): Promise<{ uri: string;
       ? await ImageManipulator.manipulate(file.uri).resize(first.width >= first.height ? { width: MAX_PHOTO_EDGE } : { height: MAX_PHOTO_EDGE }).renderAsync()
       : first;
     const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.85 });
-    return { uri: saved.uri, name: `page-${n}.jpg`, type: 'image/jpeg' };
+    return devicePart(saved.uri, `page-${n}.jpg`, 'image/jpeg');
   } catch {
     // A format the phone can't decode itself (a RAW DNG on some Android phones): the server
     // converts it instead.
-    return { uri: file.uri, name: file.name, type: file.mimeType || 'application/octet-stream' };
+    return devicePart(file.uri, file.name, file.mimeType || 'application/octet-stream');
   }
 }
 
-// One form field per file, in page order: the browser's File on the web build, a { uri, name,
-// type } descriptor on a device.
+// One form field per file, in page order: the browser's File on the web build, the file's bytes
+// on a device.
 async function buildForm(files: UploadFile[]): Promise<FormData> {
   const form = new FormData();
   for (const [i, f] of files.entries()) {
@@ -64,8 +72,8 @@ async function buildForm(files: UploadFile[]): Promise<FormData> {
     if (file) form.append('file', file, f.name);
     else if (f.kind === 'pdf') {
       const name = f.name.toLowerCase().endsWith('.pdf') ? f.name : `${f.name}.pdf`;
-      form.append('file', { uri: f.uri, name, type: 'application/pdf' } as unknown as Blob);
-    } else form.append('file', (await preparePhoto(f, i + 1)) as unknown as Blob);
+      form.append('file', devicePart(f.uri, name, 'application/pdf'));
+    } else form.append('file', await preparePhoto(f, i + 1));
   }
   return form;
 }
