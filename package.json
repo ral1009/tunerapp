@@ -13,6 +13,7 @@
     "phase0:validate": "tsx audio/__tests__/offline-validation/runValidation.ts",
     "followerTest": "tsx practice/__tests__/resync-harness.ts",
     "offlineScorerTest": "tsx practice/__tests__/offline-scorer-harness.ts",
+    "deviceAlignTest": "tsx practice/__tests__/device-align-harness.ts",
     "replayScore": "tsx practice/__tests__/replay-scorer.ts",
     "replayTake": "tsx practice/__tests__/replay-take.ts",
     "spotPracticeTest": "tsx practice/__tests__/spot-practice-harness.ts"
@@ -29,6 +30,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@xmldom/xmldom": "^0.8.10",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "vite": "^8.2.0"
