@@ -10,6 +10,8 @@ export type LayoutPreference = 'auto' | 'phone' | 'tablet';
 export type ScoreTheme = 'paper' | 'ebony' | 'auto';
 export type GradeReference = 'a440' | 'own';
 export type Strictness = 'relaxed' | 'standard' | 'strict';
+// Where the score is followed while playing: in the app (the default), or on the laptop server.
+export type ScoreFollowing = 'device' | 'server';
 
 export interface Settings {
   layout: LayoutPreference;
@@ -18,6 +20,7 @@ export interface Settings {
   strictness: Strictness;
   referencePitchHz: 440 | 442 | 443;
   wood: WoodKey;
+  scoreFollowing: ScoreFollowing;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -27,6 +30,7 @@ export const DEFAULT_SETTINGS: Settings = {
   strictness: 'standard',
   referencePitchHz: 440,
   wood: 'maple',
+  scoreFollowing: 'device',
 };
 
 const STORAGE_KEY = 'tunerapp.settings.v1';

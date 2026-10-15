@@ -49,10 +49,21 @@ export type EngineCommand =
   // grading there froze the phone. The take's audio is fetched straight from the alignment server
   // (GET /api/take/<id>: raw float32, exactly the samples the app sent), so the phone never
   // re-encodes or forwards it; "graded" answers with the per-note records.
+  // Score following on the device (practice/onDevice): the same alignment the server runs, in
+  // this page for the same reason as grading. alignStart builds (or reuses) the reference for the
+  // loaded score; alignAudio carries exactly the hop-sized chunks the app's level gate passed, as
+  // float32 little-endian base64; alignFinish (or the follower reaching the last note) answers
+  // with the post-take path, and the take stays here for "grade" with no audioUrl.
+  | { type: "alignStart"; id: string; sampleRate: number }
+  | { type: "alignAudio"; id: string; f32: string }
+  | { type: "alignSeek"; id: string; quarter: number }
+  | { type: "alignFinish"; id: string }
+  | { type: "alignStop"; id: string }
   | {
       type: "grade";
       id: string;
-      audioUrl: string;
+      // The server's copy of the take (GET /api/take/<id>); null = the take this page aligned.
+      audioUrl: string | null;
       path: AlignmentPoint[];
       notes: CursorNoteInfo[];
       quarterIndex: QuarterIndexEntry[];
@@ -69,4 +80,10 @@ export type EngineEvent =
   | { type: "gradeProgress"; id: string; fraction: number }
   | { type: "graded"; id: string; records: NoteAccuracyRecord[] }
   | { type: "gradeFailed"; id: string; message: string }
+  | { type: "alignReady"; id: string; hopLength: number; totalQuarters: number }
+  | { type: "alignPosition"; id: string; quarter: number }
+  | { type: "alignStats"; id: string; accepted: number; rejected: number }
+  // The follower reached the last note (the server's "completed"), or alignFinish: the post-take path.
+  | { type: "alignPath"; id: string; path: [number, number][]; completed: boolean }
+  | { type: "alignFailed"; id: string; message: string }
   | { type: "error"; message: string };

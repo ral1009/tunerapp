@@ -10,6 +10,8 @@ import { applyNoteCorrectionsToXml } from "../correctionUI/noteXmlCorrection";
 import { importMusicXmlToScore } from "../musicxmlImport";
 import { renderScore, type RenderedScoreHandle } from "../renderer";
 import { scoreRecordingOffline } from "../../practice/offlineIntonationScorer";
+import { buildReference, DeviceAligner, type AlignmentReference } from "../../practice/onDevice/deviceAligner";
+import { scoreNotes } from "../scoreNotes";
 import type { EngineCommand, EngineEvent, ScoreLayout, ScoreTheme } from "./protocol";
 
 declare global {
@@ -111,11 +113,85 @@ host.addEventListener("click", (event) => {
   if (hit) send({ type: "barTap", measureIndex: hit.measureIndex });
 });
 
+// ---- score following on the device (practice/onDevice) ----------------------------------------
+// The reference is a pure function of (score, sample rate): built once per score and kept.
+const references = new Map<string, AlignmentReference>();
+let aligner: { id: string; aligner: DeviceAligner; chunks: number } | null = null;
+// The last take aligned here, for "grade" without an audioUrl.
+let lastTake: Float32Array | null = null;
+
+function decodeF32(base64: string): Float32Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Float32Array(bytes.buffer, 0, bytes.length >> 2);
+}
+
+function alignmentReference(sampleRate: number): AlignmentReference {
+  const key = `${sampleRate}:${currentXml}`;
+  let reference = references.get(key);
+  if (!reference) {
+    const doc = new DOMParser().parseFromString(currentXml, "application/xml");
+    reference = buildReference(scoreNotes(doc), sampleRate);
+    references.clear(); // one score at a time is all a screen uses
+    references.set(key, reference);
+  }
+  return reference;
+}
+
+function finishAlignment(id: string, completed: boolean): void {
+  if (!aligner || aligner.id !== id) return;
+  const session = aligner;
+  aligner = null;
+  lastTake = session.aligner.takeAudio();
+  send({ type: "alignPath", id, path: session.aligner.finish(), completed });
+}
+
+function handleAlignment(command: Extract<EngineCommand, { type: "alignStart" | "alignAudio" | "alignSeek" | "alignFinish" | "alignStop" }>): void {
+  try {
+    switch (command.type) {
+      case "alignStart": {
+        const reference = alignmentReference(command.sampleRate);
+        aligner = { id: command.id, aligner: new DeviceAligner(reference), chunks: 0 };
+        send({ type: "alignReady", id: command.id, hopLength: reference.hop, totalQuarters: reference.totalQuarters });
+        return;
+      }
+      case "alignAudio": {
+        if (!aligner || aligner.id !== command.id) return;
+        const quarter = aligner.aligner.push(decodeF32(command.f32));
+        if (quarter !== null) send({ type: "alignPosition", id: command.id, quarter });
+        aligner.chunks += 1;
+        if (aligner.chunks % 15 === 0) send({ type: "alignStats", id: command.id, ...aligner.aligner.stats() });
+        // The follower stops at the last note; the server then ends the session with its path.
+        if (aligner.aligner.completed) finishAlignment(command.id, true);
+        return;
+      }
+      case "alignSeek":
+        if (aligner?.id === command.id) aligner.aligner.seek(command.quarter);
+        return;
+      case "alignFinish":
+        finishAlignment(command.id, false);
+        return;
+      case "alignStop":
+        if (aligner?.id === command.id) aligner = null;
+        return;
+    }
+  } catch (error) {
+    send({ type: "alignFailed", id: command.id, message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 async function grade(command: Extract<EngineCommand, { type: "grade" }>): Promise<void> {
   try {
-    const response = await fetch(command.audioUrl);
-    if (!response.ok) throw new Error(`couldn't fetch the take from the server (${response.status})`);
-    const audio = new Float32Array(await response.arrayBuffer());
+    let audio: Float32Array;
+    if (command.audioUrl) {
+      const response = await fetch(command.audioUrl);
+      if (!response.ok) throw new Error(`couldn't fetch the take from the server (${response.status})`);
+      audio = new Float32Array(await response.arrayBuffer());
+    } else {
+      if (!lastTake) throw new Error("no take to grade");
+      audio = lastTake;
+    }
     let lastSent = -1;
     const records = await scoreRecordingOffline(audio, command.path, command.notes, command.quarterIndex, command.setup, command.config, (fraction) => {
       if (fraction - lastSent >= 0.05 || fraction === 1) {
@@ -134,6 +210,13 @@ async function receive(command: EngineCommand): Promise<void> {
     switch (command.type) {
       case "grade":
         await grade(command);
+        return;
+      case "alignStart":
+      case "alignAudio":
+      case "alignSeek":
+      case "alignFinish":
+      case "alignStop":
+        handleAlignment(command);
         return;
       case "load": {
         currentXml = command.xml;

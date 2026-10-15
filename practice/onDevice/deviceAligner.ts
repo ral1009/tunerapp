@@ -181,8 +181,10 @@ export class DeviceAligner {
         this.lastQuarter = q;
         moved = q;
       }
-      // The follower stops at the last note's onset (is_still_following).
-      if (q >= this.reference.lastOnsetQuarter - 1e-9) this.completed = true;
+      // The follower stops once past the last note's onset (is_still_following). On the server
+      // the frame sitting exactly on it still reads as just before it -- its beat_map gives a
+      // hair under the float32 onset -- so it takes one more frame; strictly past matches that.
+      if (q > this.reference.lastOnsetQuarter + 1e-9) this.completed = true;
     }
     return moved;
   }

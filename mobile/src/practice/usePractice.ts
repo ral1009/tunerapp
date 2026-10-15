@@ -16,7 +16,7 @@ import { LiveTuner } from '@/audio/liveTuner';
 import { useMic } from '@/audio/useMic';
 import type { MicStatus } from '@/audio/micTypes';
 
-import { AlignmentSession, type SessionStatus } from './alignmentSession';
+import { AlignmentSession, LOCAL_TAKE, ServerTransport, type AlignmentTransport, type SessionStatus } from './alignmentSession';
 import { probeChunk, probeSection, startProbe } from './perfProbe';
 import { serverUrl } from '@/config/server';
 
@@ -64,6 +64,9 @@ export interface PracticeOptions {
   onTake: (result: PracticeResult) => void; // each graded take (each pass, when looping)
   // Where post-take grading runs (the score engine's page, see engineGrader.ts); in-process if absent.
   grader?: Grader;
+  // Who follows the score: the score engine on this device (engineAligner.ts) or, by default, the
+  // laptop server.
+  makeTransport?: () => AlignmentTransport;
 }
 
 function stepIndexAt(index: QuarterIndexEntry[], quarter: number): number | null {
@@ -117,7 +120,7 @@ export function usePractice(options: PracticeOptions) {
     if (!o.notes) return;
     setPhase('scoring');
     if (!path || path.length < 2) {
-      setError('The alignment server didn’t send the take back, so it couldn’t be graded.');
+      setError('The take didn’t come back from score following, so it couldn’t be graded.');
       setPhase('error');
       return;
     }
@@ -136,8 +139,11 @@ export function usePractice(options: PracticeOptions) {
     };
     let records: NoteAccuracyRecord[];
     try {
-      records = o.grader && takeId
-        ? await o.grader({ audioUrl: `${serverUrl()}/api/take/${takeId}`, path, notes: o.notes, quarterIndex: o.quarterIndex, setup, config: SCORING_CONFIG, onProgress: (f) => setProgress(f) })
+      // The score engine grades the take it already holds (device following) or fetches the
+      // server's copy; without a grader, grade here.
+      const audioUrl = takeId === LOCAL_TAKE ? null : takeId ? `${serverUrl()}/api/take/${takeId}` : undefined;
+      records = o.grader && audioUrl !== undefined
+        ? await o.grader({ audioUrl, path, notes: o.notes, quarterIndex: o.quarterIndex, setup, config: SCORING_CONFIG, onProgress: (f) => setProgress(f) })
         : await scoreRecordingOffline(session.recordedAudio(), path, o.notes, o.quarterIndex, setup, SCORING_CONFIG, (f) => setProgress(f));
     } catch (e) {
       setError(`The take couldn’t be graded: ${e instanceof Error ? e.message : String(e)}`);
@@ -189,7 +195,7 @@ export function usePractice(options: PracticeOptions) {
         setError(message);
         setPhase('error');
       },
-    }, noiseFloorRef.current);
+    }, (optionsRef.current.makeTransport ?? (() => new ServerTransport()))(), noiseFloorRef.current);
     sessionRef.current = session;
     connectingRef.current = false;
     pendingRef.current = { step: null, count: 0 };
@@ -285,7 +291,7 @@ export function usePractice(options: PracticeOptions) {
     if (!o.notes) return null;
     const entry = [...o.quarterIndex].sort((a, b) => a.quarter - b.quarter).find((e) => (o.notes?.[e.stepIndex]?.measureIndex ?? -1) + 1 >= bar);
     if (!entry) return `There's no bar ${bar} with notes in this score.`;
-    if (!sessionRef.current?.seek(entry.quarter)) return 'Not connected to the alignment server.';
+    if (!sessionRef.current?.seek(entry.quarter)) return 'Score following isn’t running yet.';
     ignoreUntilRef.current = Date.now() + JUMP_SETTLE_MS;
     pendingRef.current = { step: null, count: 0 };
     o.moveCursor(entry.quarter);

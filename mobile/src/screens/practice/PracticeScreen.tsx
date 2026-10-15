@@ -11,6 +11,7 @@ import { ServerStatusLine } from '@/components/ServerStatus';
 import { useLibrary } from '@/data/libraryStore';
 import { useTakes } from '@/data/takesStore';
 import { highlightsFor } from '@/practice/grading';
+import { createEngineAligner } from '@/practice/engineAligner';
 import { createEngineGrader } from '@/practice/engineGrader';
 import { useLiveValue, type LiveValue } from '@/practice/liveValue';
 import { probeRender } from '@/practice/perfProbe';
@@ -42,9 +43,13 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
 
   // Grading runs in the score engine's page (its own thread, with a JIT), not on the app's thread.
   const [grader] = useState(createEngineGrader);
+  // Score following runs there too, unless Settings says the laptop server.
+  const [engineAligner] = useState(createEngineAligner);
+  const onDevice = settings.scoreFollowing !== 'server';
   useEffect(() => {
     grader.attach((command) => score.current?.send(command));
-  }, [grader]);
+    engineAligner.attach((command) => score.current?.send(command));
+  }, [grader, engineAligner]);
 
   const moveCursor = useCallback((quarter: number) => {
     score.current?.send({ type: 'cursor', action: 'show' });
@@ -72,6 +77,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
     moveCursor,
     onTake,
     grader: grader.grade,
+    makeTransport: onDevice ? engineAligner.transport : undefined,
   });
 
   // A whole-piece take goes straight to its review.
@@ -95,7 +101,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
   }
 
   const onEngine = (event: EngineEvent) => {
-    if (grader.handle(event)) return;
+    if (grader.handle(event) || engineAligner.handle(event)) return;
     if (event.type === 'loaded' && event.rendered) {
       setNotes(event.notes);
       setQuarterIndex(event.quarterIndex);
@@ -200,7 +206,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
     <Wood variant="band">
       <Purfling />
       <View style={[styles.notices, { paddingHorizontal: g }]}>
-        <ServerStatusLine quietWhenOnline compact />
+        {onDevice ? null : <ServerStatusLine quietWhenOnline compact />}
         {loopLine}
         {jumpMessage ? <Text style={styles.jumpMessage}>{jumpMessage}</Text> : null}
       </View>

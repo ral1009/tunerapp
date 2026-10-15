@@ -107,9 +107,15 @@ export function SettingsScreen({ layout }: { layout: LayoutMode }) {
     {
       title: 'Server',
       rows: (
-        <View style={[styles.row, { paddingVertical: 14 }]}>
-          <ServerStatusLine />
-        </View>
+        <>
+          <Row label="Score following" hint={tablet ? 'This device works anywhere; the laptop needs the server running on the same Wi-Fi.' : undefined}>
+            <Choice label="Score following" gap={16} value={settings.scoreFollowing} onChange={(value) => update({ scoreFollowing: value })}
+              options={[{ value: 'device', label: 'This device' }, { value: 'server', label: 'Laptop' }]} />
+          </Row>
+          <View style={[styles.row, { paddingVertical: 14 }]}>
+            <ServerStatusLine />
+          </View>
+        </>
       ),
     },
   ];

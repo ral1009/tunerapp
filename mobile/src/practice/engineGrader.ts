@@ -10,7 +10,8 @@ import type { CursorNoteInfo, QuarterIndexEntry } from '@core/score/renderer/sco
 // straight from the alignment server, so the phone doesn't encode or forward any of it.
 
 export interface GradeRequest {
-  audioUrl: string;
+  // The server's copy of the take; null = the take the score engine aligned on this device.
+  audioUrl: string | null;
   path: AlignmentPoint[];
   notes: CursorNoteInfo[];
   quarterIndex: QuarterIndexEntry[];
