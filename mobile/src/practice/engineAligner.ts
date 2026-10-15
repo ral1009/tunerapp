@@ -1,6 +1,7 @@
 import type { EngineCommand, EngineEvent } from '@core/score/engine/protocol';
 
 import { LOCAL_TAKE, type AlignmentTransport, type TransportEvents } from './alignmentSession';
+import { probeEngine } from './perfProbe';
 
 // Score following on this device: the transport that hands the take to the score engine's page
 // (score/engine, practice/onDevice), which runs the same alignment as the laptop server -- a port
@@ -44,6 +45,7 @@ interface Live {
   fail: ((error: Error) => void) | null;
   queued: Float32Array[];
   finished: boolean;
+  sent: number; // hop chunks handed to the engine
 }
 
 // Created once per practice screen; attach() connects it to the score view once that exists, and
@@ -90,6 +92,7 @@ export function createEngineAligner() {
             },
             queued: [],
             finished: false,
+            sent: 0,
           };
           live = session;
           // The engine builds the reference from the score it has loaded (the same XML).
@@ -99,6 +102,7 @@ export function createEngineAligner() {
       send(chunk) {
         if (!session || session.finished || live !== session) return false;
         session.queued.push(chunk);
+        session.sent += 1;
         if (session.queued.length >= CHUNKS_PER_MESSAGE) flush(session);
         return true;
       },
@@ -136,6 +140,9 @@ export function createEngineAligner() {
         break;
       case 'alignPosition':
         session.events.onPosition(event.quarter);
+        break;
+      case 'alignStats':
+        probeEngine(Math.max(0, session.sent - event.processed), event.busyMs, event.worstMs);
         break;
       case 'alignPath':
         session.finished = true;

@@ -7,6 +7,11 @@ const { getDefaultConfig } = require('expo/metro-config');
 const projectRoot = __dirname;
 const repoRoot = path.resolve(projectRoot, '..');
 
+// The score engine page (score/engine) is bundled into src/score/engineHtml.generated.ts. Build it
+// whenever Metro starts, however it was started: `npx expo start ...` skips npm's prestart hook,
+// and a stale engine is missing whatever the app now asks of it.
+require('child_process').execFileSync(process.execPath, [path.join(projectRoot, 'scripts', 'build-score-engine.mjs')], { stdio: 'inherit' });
+
 const config = getDefaultConfig(projectRoot);
 config.watchFolders = [
   ...(config.watchFolders ?? []),

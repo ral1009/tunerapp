@@ -82,7 +82,9 @@ export type EngineEvent =
   | { type: "gradeFailed"; id: string; message: string }
   | { type: "alignReady"; id: string; hopLength: number; totalQuarters: number }
   | { type: "alignPosition"; id: string; quarter: number }
-  | { type: "alignStats"; id: string; accepted: number; rejected: number }
+  // Every ~0.5 s: gate counts, chunks processed so far, and time this page spent on alignment
+  // since the last report (busy total, slowest message) -- for spotting a backlog on a phone.
+  | { type: "alignStats"; id: string; accepted: number; rejected: number; processed: number; busyMs: number; worstMs: number }
   // The follower reached the last note (the server's "completed"), or alignFinish: the post-take path.
   | { type: "alignPath"; id: string; path: [number, number][]; completed: boolean }
   | { type: "alignFailed"; id: string; message: string }

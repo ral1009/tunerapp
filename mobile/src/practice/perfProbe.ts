@@ -33,6 +33,15 @@ export function probeSection<T>(name: string, fn: () => T): T {
   }
 }
 
+// The score engine's side, when it follows the score on the device: how far behind the audio it
+// is (chunks sent minus chunks it has processed) and its busiest message.
+let engine: { behind: number; busyMs: number; worstMs: number } | null = null;
+export function probeEngine(behind: number, busyMs: number, worstMs: number): void {
+  engine = engine
+    ? { behind, busyMs: engine.busyMs + busyMs, worstMs: Math.max(engine.worstMs, worstMs) }
+    : { behind, busyMs, worstMs };
+}
+
 export function probeRender(): void {
   renders += 1;
 }
@@ -51,8 +60,10 @@ export function startProbe(): () => void {
     const parts = Object.entries(sections).map(([k, v]) => `${k} ${v.toFixed(0)}ms`).join(', ');
     console.log(
       `[perf] 2s: mic ${chunks} chunks (${(samples / 2000).toFixed(1)}k samples/s), handling ${chunkMs.toFixed(0)}ms` +
-        `${parts ? ` [${parts}]` : ''}, renders ${renders}, JS thread late by up to ${worstLag.toFixed(0)}ms`,
+        `${parts ? ` [${parts}]` : ''}, renders ${renders}, JS thread late by up to ${worstLag.toFixed(0)}ms` +
+        (engine ? `; engine ${engine.behind} chunks behind, busy ${engine.busyMs.toFixed(0)}ms, slowest message ${engine.worstMs.toFixed(0)}ms` : ''),
     );
+    engine = null;
     chunks = 0;
     chunkMs = 0;
     renders = 0;

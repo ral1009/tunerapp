@@ -116,7 +116,7 @@ host.addEventListener("click", (event) => {
 // ---- score following on the device (practice/onDevice) ----------------------------------------
 // The reference is a pure function of (score, sample rate): built once per score and kept.
 const references = new Map<string, AlignmentReference>();
-let aligner: { id: string; aligner: DeviceAligner; chunks: number } | null = null;
+let aligner: { id: string; aligner: DeviceAligner; chunks: number; busyMs: number; worstMs: number } | null = null;
 // The last take aligned here, for "grade" without an audioUrl.
 let lastTake: Float32Array | null = null;
 
@@ -152,16 +152,24 @@ function handleAlignment(command: Extract<EngineCommand, { type: "alignStart" | 
     switch (command.type) {
       case "alignStart": {
         const reference = alignmentReference(command.sampleRate);
-        aligner = { id: command.id, aligner: new DeviceAligner(reference), chunks: 0 };
+        aligner = { id: command.id, aligner: new DeviceAligner(reference), chunks: 0, busyMs: 0, worstMs: 0 };
         send({ type: "alignReady", id: command.id, hopLength: reference.hop, totalQuarters: reference.totalQuarters });
         return;
       }
       case "alignAudio": {
         if (!aligner || aligner.id !== command.id) return;
+        const started = performance.now();
         const quarter = aligner.aligner.push(decodeF32(command.f32));
         if (quarter !== null) send({ type: "alignPosition", id: command.id, quarter });
+        const took = performance.now() - started;
+        aligner.busyMs += took;
+        aligner.worstMs = Math.max(aligner.worstMs, took);
         aligner.chunks += 1;
-        if (aligner.chunks % 15 === 0) send({ type: "alignStats", id: command.id, ...aligner.aligner.stats() });
+        if (aligner.chunks % 8 === 0) {
+          send({ type: "alignStats", id: command.id, ...aligner.aligner.stats(), processed: aligner.aligner.frames + 1, busyMs: aligner.busyMs, worstMs: aligner.worstMs });
+          aligner.busyMs = 0;
+          aligner.worstMs = 0;
+        }
         // The follower stops at the last note; the server then ends the session with its path.
         if (aligner.aligner.completed) finishAlignment(command.id, true);
         return;

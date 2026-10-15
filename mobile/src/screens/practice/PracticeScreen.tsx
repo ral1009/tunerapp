@@ -120,7 +120,9 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
         : practice.phase === 'loading'
           ? 'Opening the score…'
           : practice.phase === 'connecting'
-            ? 'Connecting…'
+            ? onDevice
+              ? 'Preparing the score…' // nothing to connect to: the engine is building its reference
+              : 'Connecting…'
             : practice.phase === 'preparing' || practice.sessionStatus === 'preparing'
               ? 'Preparing the score…'
               : practice.phase === 'ready' || practice.sessionStatus === 'waiting'
