@@ -18,6 +18,7 @@ import type { MicStatus } from '@/audio/micTypes';
 
 import { AlignmentSession, LOCAL_TAKE, ServerTransport, type AlignmentTransport, type SessionStatus } from './alignmentSession';
 import { probeChunk, probeSection, startProbe } from './perfProbe';
+import { startTrace, traceAudio, traceEvent, uploadTrace } from './takeTrace';
 import { serverUrl } from '@/config/server';
 
 import type { Grader } from './engineGrader';
@@ -119,6 +120,7 @@ export function usePractice(options: PracticeOptions) {
     offlineTimerRef.current = null;
     if (!o.notes) return;
     setPhase('scoring');
+    uploadTrace({ xml: o.xml, quarterIndex: o.quarterIndex, path, takeId, chunksSent: session.chunksSent, levels: session.levels() });
     if (!path || path.length < 2) {
       setError('The take didn’t come back from score following, so it couldn’t be graded.');
       setPhase('error');
@@ -172,12 +174,16 @@ export function usePractice(options: PracticeOptions) {
     const previous = sessionRef.current;
     if (previous?.noiseFloorRms !== undefined) noiseFloorRef.current = previous.noiseFloorRms;
     previous?.stop();
+    uploadTrace({ xml: optionsRef.current.xml, quarterIndex: optionsRef.current.quarterIndex, abandoned: true });
+    startTrace(optionsRef.current.makeTransport ? 'device' : 'server');
     const session = new AlignmentSession({
       onStatus: (status) => {
+        traceEvent('status', status);
         setSessionStatus(status);
         if (status === 'streaming') setPhase('playing');
       },
       onPosition: (quarter) => {
+        traceEvent('pos', quarter);
         if (Date.now() < ignoreUntilRef.current) return;
         const o = optionsRef.current;
         const step = stepIndexAt(o.quarterIndex, quarter);
@@ -186,12 +192,14 @@ export function usePractice(options: PracticeOptions) {
         else pendingRef.current = { step, count: 1 };
         if (pendingRef.current.count === POSITION_STABILITY_COUNT) {
           o.moveCursor(quarter);
+          traceEvent('cursor', step);
           setCurrentStep(step);
         }
       },
       onOfflinePath: (path, takeId) => void scoreTake(session, path, takeId),
       onClosed: () => undefined,
       onError: (message) => {
+        traceEvent('error', message);
         setError(message);
         setPhase('error');
       },
@@ -215,12 +223,14 @@ export function usePractice(options: PracticeOptions) {
     probeSection('tuner', () => tunerRef.current?.push(chunk.samples, chunk.sampleRate));
     const session = sessionRef.current;
     if (!session) return;
+    traceAudio(chunk.samples, chunk.sampleRate);
     if (!connectingRef.current) {
       connectingRef.current = true;
       const o = optionsRef.current;
       session
         .connect(o.xml, chunk.sampleRate)
         .then(() => {
+          traceEvent('ready');
           const spot = resolvedRegion();
           setSpotRegion(spot);
           // A loop starts at its first note: the same seek "Jump to bar" sends, before any audio.
@@ -264,6 +274,7 @@ export function usePractice(options: PracticeOptions) {
     () => () => {
       loopingRef.current = false;
       sessionRef.current?.stop();
+      uploadTrace({ xml: optionsRef.current.xml, quarterIndex: optionsRef.current.quarterIndex, abandoned: true });
       stopMic();
       if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current);
     },
@@ -275,6 +286,7 @@ export function usePractice(options: PracticeOptions) {
     if (stopLooping) loopingRef.current = false;
     const session = sessionRef.current;
     if (!session) return;
+    traceEvent('finish', { chunksSent: session.chunksSent });
     if (session.chunksSent === 0) {
       // Nothing played: nothing to grade.
       session.stop();
@@ -292,6 +304,7 @@ export function usePractice(options: PracticeOptions) {
     const entry = [...o.quarterIndex].sort((a, b) => a.quarter - b.quarter).find((e) => (o.notes?.[e.stepIndex]?.measureIndex ?? -1) + 1 >= bar);
     if (!entry) return `There's no bar ${bar} with notes in this score.`;
     if (!sessionRef.current?.seek(entry.quarter)) return 'Score following isn’t running yet.';
+    traceEvent('jump', entry.quarter);
     ignoreUntilRef.current = Date.now() + JUMP_SETTLE_MS;
     pendingRef.current = { step: null, count: 0 };
     o.moveCursor(entry.quarter);

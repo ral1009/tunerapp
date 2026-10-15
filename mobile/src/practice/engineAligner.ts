@@ -2,6 +2,7 @@ import type { EngineCommand, EngineEvent } from '@core/score/engine/protocol';
 
 import { LOCAL_TAKE, type AlignmentTransport, type TransportEvents } from './alignmentSession';
 import { probeEngine } from './perfProbe';
+import { traceEvent } from './takeTrace';
 
 // Score following on this device: the transport that hands the take to the score engine's page
 // (score/engine, practice/onDevice), which runs the same alignment as the laptop server -- a port
@@ -143,6 +144,7 @@ export function createEngineAligner() {
         break;
       case 'alignStats':
         probeEngine(Math.max(0, session.sent - event.processed), event.busyMs, event.worstMs);
+        traceEvent('stats', { sent: session.sent, processed: event.processed, accepted: event.accepted, rejected: event.rejected, busyMs: event.busyMs, worstMs: event.worstMs });
         break;
       case 'alignPath':
         session.finished = true;
@@ -154,6 +156,7 @@ export function createEngineAligner() {
         live = null;
         break;
       case 'alignFailed':
+        traceEvent('alignFailed', event.message);
         if (session.fail) session.fail(new Error(event.message));
         else session.events.onError(`Score following failed: ${event.message}`);
         session.ready = null;

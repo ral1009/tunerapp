@@ -12,6 +12,7 @@ import { useLibrary } from '@/data/libraryStore';
 import { useTakes } from '@/data/takesStore';
 import { highlightsFor } from '@/practice/grading';
 import { createEngineAligner } from '@/practice/engineAligner';
+import { traceEvent } from '@/practice/takeTrace';
 import { createEngineGrader } from '@/practice/engineGrader';
 import { useLiveValue, type LiveValue } from '@/practice/liveValue';
 import { probeRender } from '@/practice/perfProbe';
@@ -102,6 +103,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
 
   const onEngine = (event: EngineEvent) => {
     if (grader.handle(event) || engineAligner.handle(event)) return;
+    if (event.type === 'error') traceEvent('engineError', event.message);
     if (event.type === 'loaded' && event.rendered) {
       setNotes(event.notes);
       setQuarterIndex(event.quarterIndex);

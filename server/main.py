@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, UploadFile, WebSocket
+from fastapi import FastAPI, File, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from collections import OrderedDict
 
@@ -156,6 +156,34 @@ async def get_take(take_id: str) -> Response:
     if audio is None:
         return JSONResponse(status_code=404, content={"error": "No such take (only the last few are kept)."})
     return Response(content=audio, media_type="application/octet-stream")
+
+
+DEVICE_TAKES_DIR = TMP_ROOT / "device-takes"
+
+
+@app.post("/api/debug/device-take")
+async def save_device_take(request: Request) -> JSONResponse:
+    """A practice take recorded on the phone, sent after it ends so a real session can be replayed
+    offline (.scratch/replay_device_take.ts). Body: 4-byte little-endian length, that many bytes of
+    JSON (what happened, with times), then the raw microphone audio as 16-bit little-endian PCM."""
+    body = await request.body()
+    if len(body) < 4:
+        return JSONResponse(status_code=400, content={"error": "empty"})
+    meta_len = int.from_bytes(body[:4], "little")
+    meta = json.loads(body[4 : 4 + meta_len].decode("utf-8"))
+    audio = body[4 + meta_len :]
+    folder = DEVICE_TAKES_DIR / time.strftime("%Y%m%d-%H%M%S")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "trace.json").write_text(json.dumps(meta), encoding="utf-8")
+    import wave
+
+    with wave.open(str(folder / "mic.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(meta.get("sampleRate", 48000)))
+        w.writeframes(audio)
+    logger.info("saved device take %s (%.1f s of audio)", folder.name, len(audio) / 2 / max(1, int(meta.get("sampleRate", 48000))))
+    return JSONResponse(content={"ok": True, "folder": folder.name})
 
 
 @app.get("/api/health")
