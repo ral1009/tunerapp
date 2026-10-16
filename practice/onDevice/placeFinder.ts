@@ -10,8 +10,8 @@
 //
 // This keeps the last few seconds of played (tonal, gate-accepted) frames and, every few frames,
 // matches them against the WHOLE reference with open-begin, open-end DTW (each played frame used
-// once; the reference may stay or advance 1 or 2 frames per played frame, so the player can be up
-// to 2x the score's tempo and arbitrarily slower). If the best place is away from where the
+// once; the reference may stay or advance 1 to 3 frames per played frame, so the player can be up
+// to 3x the score's tempo -- as fast as the live follower can follow -- and arbitrarily slower). If the best place is away from where the
 // follower is, is clearly better than anything near the follower, isn't one of several equally
 // good places (repeated passages), and the next check agrees, the follower should move there.
 //
@@ -201,6 +201,11 @@ export class PlaceFinder {
           start = prevStart[j - 2];
           startRow = prevRow[j - 2];
         }
+        if (j >= 3 && prev[j - 3] < best) {
+          best = prev[j - 3];
+          start = prevStart[j - 3];
+          startRow = prevRow[j - 3];
+        }
         next[j] = best + this.rows[row + j];
         nextStart[j] = start;
         nextRow[j] = startRow;
@@ -246,7 +251,7 @@ export class PlaceFinder {
     const found = verdict.found;
     // Agrees with the last check: the same place, moved on by at most what was played since.
     const last = this.agreed[this.agreed.length - 1];
-    if (last && !(found.target >= last.target - 2 && found.target <= last.target + PLACE_CHECK_EVERY_FRAMES + 2)) this.agreed = [];
+    if (last && !(found.target >= last.target - 2 && found.target <= last.target + (3 * PLACE_CHECK_EVERY_FRAMES) / DECIMATE + 2)) this.agreed = [];
     this.agreed.push(found);
     if (this.agreed.length < PLACE_CONFIRMATIONS) return null;
     // The stretch began where the first agreeing check saw it begin. Back to full frames: the
