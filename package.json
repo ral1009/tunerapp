@@ -14,6 +14,7 @@
     "followerTest": "tsx practice/__tests__/resync-harness.ts",
     "offlineScorerTest": "tsx practice/__tests__/offline-scorer-harness.ts",
     "deviceAlignTest": "tsx practice/__tests__/device-align-harness.ts",
+    "alignStressTest": "tsx practice/__tests__/align-stress-harness.ts",
     "replayScore": "tsx practice/__tests__/replay-scorer.ts",
     "replayTake": "tsx practice/__tests__/replay-take.ts",
     "spotPracticeTest": "tsx practice/__tests__/spot-practice-harness.ts"

@@ -49,6 +49,11 @@ export function buildReference(score: ScoreNotes, sampleRate: number): Alignment
   };
 }
 
+export interface DeviceAlignerOptions {
+  // Re-find the place when the live follower has lost it (see Recovery below). Default on.
+  recovery?: boolean;
+}
+
 export class DeviceAligner {
   readonly reference: AlignmentReference;
   private readonly follower: ArztFollower;
@@ -74,7 +79,7 @@ export class DeviceAligner {
   private lastQuarter: number | null = null;
   completed = false;
 
-  constructor(reference: AlignmentReference) {
+  constructor(reference: AlignmentReference, readonly options: DeviceAlignerOptions = {}) {
     this.reference = reference;
     this.sampleRate = reference.sampleRate;
     this.hop = reference.hop;
