@@ -23,7 +23,7 @@ export class ArztFollower {
   // (nRef + 1) x 2, column-major pairs: [i*2] = previous input, [i*2 + 1] = current input
   private readonly cost: Float32Array;
   private pendingSeek: number | null = null;
-  private readonly stepSize: number;
+  stepSize: number; // may be changed between steps (deviceAligner.ts raises it for fast players)
   private readonly local: Float32Array; // per-step distances, reused (sized for the widest window)
 
   // stepSize: the most reference frames it may move per played frame (matchmaker: 3).

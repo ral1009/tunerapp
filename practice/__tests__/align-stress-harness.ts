@@ -26,8 +26,8 @@ import { buildReference, DeviceAligner, SERVER_BEHAVIOUR, type AlignmentReferenc
 
 const ROOT = "server/tmp/fixtures";
 const STRESS = join(ROOT, "_stress");
-const DEV = ["beginner-d-scale-flat-habit", "beginner-lightly-row-self-tuned", "beginner-twinkle-careful", "bwv1004-giga", "user-take-a"];
-const HELD_OUT = ["bwv1006-menuet1", "user-take-b"];
+const DEV = ["beginner-d-scale-flat-habit", "beginner-lightly-row-self-tuned", "beginner-twinkle-careful", "bwv1004-giga", "user-take-a", "bwv1006-menuet1", "user-take-b"];
+const HELD_OUT = ["bwv1004-corrente", "bwv1004-allemanda-qmul", "bwv1004-allemanda-vicond"];
 const TRACK_TOLERANCE_S = 1.0;
 const POST_TOLERANCE_S = 0.25;
 const GRACE_S = 3;
@@ -297,6 +297,7 @@ function run(c: Case, scenario: Scenario, options: DeviceAlignerOptions): RunRes
   const tp = performance.now();
   const path = aligner.finish();
   const postMs = performance.now() - tp;
+  if (TRACE && aligner.postTakeChoice) console.log(`      post-take: with moves ${aligner.postTakeChoice.withMoves.toFixed(3)}, without ${aligner.postTakeChoice.without.toFixed(3)}`);
 
   const tolQ = (TRACK_TOLERANCE_S * c.tempo) / 60;
   const postTolQ = (POST_TOLERANCE_S * c.tempo) / 60;

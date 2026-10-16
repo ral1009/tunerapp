@@ -14,6 +14,15 @@ export interface TakeSeek {
   sample: number; // position in the take where the jump happened
   target: number; // reference frame jumped to
   liveBefore: number; // live follower's frame just before the jump
+  found?: boolean; // the place finder's move, not the player's "Jump to bar"
+}
+
+// A post-take alignment and how well it explains the take: the DTW cost at each stretch's chosen
+// end summed, over the summed path-length normaliser the end choice uses (reference frames +
+// performance frames). Lower is better; comparable between alignments of the same take.
+export interface ScoredAlignment {
+  path: AlignmentPathPoint[];
+  cost: number;
 }
 
 const END_SEARCH_FRAMES = 2 * 30; // OFFLINE_END_SEARCH_SECONDS x the server's FRAME_RATE
@@ -50,8 +59,12 @@ export function alignTake(input: OfflineInput): AlignmentPathPoint[] {
 
 // The DTW half of alignTake, given the take's chroma and the frames the gate kept.
 export function alignFromFeatures(input: OfflineInput, features: Float32Array, frames: number, tonal: number[]): AlignmentPathPoint[] {
+  return alignScored(input, features, frames, tonal).path;
+}
+
+export function alignScored(input: OfflineInput, features: Float32Array, frames: number, tonal: number[]): ScoredAlignment {
   const { sampleRate, hop, nFft, reference, refFrameQuarter } = input;
-  if (tonal.length < 2) return [];
+  if (tonal.length < 2) return { path: [], cost: Infinity };
   const nRef = reference.length / 12;
   const liveFinal = Math.min(Math.max(input.liveFinal, 0), nRef - 1);
   const stretches: { lo: number; hi: number; refLo: number; liveEnd: number }[] = [];
@@ -65,12 +78,17 @@ export function alignFromFeatures(input: OfflineInput, features: Float32Array, f
   stretches.push({ lo: start, hi: frames, refLo: refStart, liveEnd: liveFinal });
 
   const result: AlignmentPathPoint[] = [];
+  let cost = 0;
+  let length = 0;
   for (const { lo, hi, refLo, liveEnd } of stretches) {
     const picked = tonal.filter((f) => f >= lo && f < hi);
     if (picked.length < 2 || refLo >= nRef - 1) continue;
-    result.push(...alignStretch(features, picked, reference, refFrameQuarter, refLo, Math.max(liveEnd, refLo), hop, nFft, sampleRate));
+    const stretch = alignStretch(features, picked, reference, refFrameQuarter, refLo, Math.max(liveEnd, refLo), hop, nFft, sampleRate);
+    result.push(...stretch.points);
+    cost += stretch.cost;
+    length += stretch.length;
   }
-  return result;
+  return { path: result, cost: length > 0 ? cost / length : Infinity };
 }
 
 function alignStretch(
@@ -83,7 +101,7 @@ function alignStretch(
   hop: number,
   nFft: number,
   sampleRate: number
-): AlignmentPathPoint[] {
+): { points: AlignmentPathPoint[]; cost: number; length: number } {
   const nRef = reference.length / 12;
   const liveEnd = Math.min(Math.max(liveEndIn, refLo), nRef - 1);
   const endLo = Math.max(refLo + 1, liveEnd - END_SEARCH_FRAMES);
@@ -204,5 +222,5 @@ function alignStretch(
     const ref = Math.min(refs[refs.length >> 1], refFrameQuarter.length - 1);
     out.push([(frames[p] * hop + centre) / sampleRate, refFrameQuarter[ref]]);
   }
-  return out;
+  return { points: out, cost: finalColumn[end - refLo], length: end - refLo + 1 + M };
 }

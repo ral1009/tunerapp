@@ -33,8 +33,8 @@ RECORDINGS = BASE_DIR / "tmp" / "recordings"
 OUT = BASE_DIR / "tmp" / "fixtures"
 
 
-def recording_case(name: str, seeks: list[tuple[float, float]] | None = None) -> dict | None:
-    xml = RECORDINGS / f"{name}.musicxml"
+def recording_case(name: str, seeks: list[tuple[float, float]] | None = None, score: str | None = None) -> dict | None:
+    xml = RECORDINGS / f"{score or name}.musicxml"
     wav = RECORDINGS / f"{name}.wav"
     if not (xml.exists() and wav.exists()):
         return None
@@ -73,6 +73,10 @@ def cases() -> list[dict]:
         recording_case("beginner-twinkle-careful", seeks=[(14.0, 0.0)]),
         take_case("take-2026-10-08T15-47-10-512Z", "user-take-a"),
         take_case("take-2026-10-08T19-49-39-151Z", "user-take-b"),
+        # Held out for npm run alignStressTest -- --all (added 2026-10-16, unseen until then).
+        recording_case("bwv1004-corrente"),
+        recording_case("bwv1004-allemanda-qmul", score="bwv1004-allemanda"),
+        recording_case("bwv1004-allemanda-vicond", score="bwv1004-allemanda"),
     ]
     return [c for c in found if c is not None]
 

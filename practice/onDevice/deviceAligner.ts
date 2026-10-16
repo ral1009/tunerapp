@@ -13,7 +13,7 @@
 import type { ScoreNotes } from "../../score/scoreNotes";
 import { ArztFollower } from "./arztFollower";
 import { chromaFilterBank, chromaFrames, chromaFromPower, estimateTuning, lastSpectrumBandStats, piptrackFrame, powerSpectrum } from "./chroma";
-import { alignFromFeatures, type AlignmentPathPoint, type TakeSeek } from "./offlineAlign";
+import { alignScored, type AlignmentPathPoint, type TakeSeek } from "./offlineAlign";
 import { PlaceFinder } from "./placeFinder";
 import { bandStatsFromPower, PlayingGate } from "./playingGate";
 import { referenceAudio, refFrameQuarters } from "./referenceAudio";
@@ -23,6 +23,11 @@ export const ALIGNMENT_FRAME_RATE = 30;
 // Frames of no playing, after the last note, that end the piece (0.3 s; the app's level gate
 // keeps sending for 0.4 s after the last sound).
 const END_QUIET_FRAMES = 9;
+// The place finder's moves are kept for the post-take alignment only when aligning with them
+// costs clearly less than without.
+const PLACE_MOVES_KEPT_RATIO = 0.97;
+const FAST_PLAYER_RATIO = 1.6;
+const FAST_PLAYER_WINDOW = 90; // played frames (3 s)
 
 export interface AlignmentReference {
   sampleRate: number;
@@ -61,7 +66,9 @@ export interface DeviceAlignerOptions {
   // (3x the score's tempo); the device defaults to 2: on the stress takes (npm run
   // alignStressTest) the cursor raced ahead on repeated notes less -- p90 error 0.70 -> 0.53 s on
   // clean takes, 0.89 -> 0.79 s played at 70% -- at the cost of catching up more slowly, which
-  // the place finder covers. A player can then be up to 2x the score's tempo.
+  // the place finder covers. While the follower's own progress over the last 3 s says the player
+  // is faster than FAST_PLAYER_RATIO x the score's tempo, it gets 3, so a fast player (or a score
+  // whose written tempo is slow) can still be followed up to 3x.
   stepSize?: number;
 }
 
@@ -95,6 +102,13 @@ export class DeviceAligner {
   private followerAt: number[] = [];
   private readonly placeFinder: PlaceFinder | null;
   recoveries = 0;
+  // How the post-take pass judged the place finder's moves (diagnostics): mean cost of the
+  // alignment with them and without them.
+  postTakeChoice: { withMoves: number; without: number } | null = null;
+  // The follower's frame after each of the last FAST_PLAYER_WINDOW used frames (a ring).
+  private recentFollower = new Int32Array(FAST_PLAYER_WINDOW);
+  private recentCount = 0;
+  private readonly baseStep: number;
   // Past the last note's onset since this take frame (null: not there), and the last take frame
   // the gate let through.
   private atEndSince: number | null = null;
@@ -106,7 +120,8 @@ export class DeviceAligner {
     this.sampleRate = reference.sampleRate;
     this.hop = reference.hop;
     this.nFft = reference.nFft;
-    this.follower = new ArztFollower(reference.chroma, this.sampleRate / this.hop, options.stepSize ?? 2);
+    this.baseStep = options.stepSize ?? 2;
+    this.follower = new ArztFollower(reference.chroma, this.sampleRate / this.hop, this.baseStep);
     this.frame = new Float32Array(this.nFft);
     this.S = new Float32Array((this.nFft >> 1) + 1);
     this.placeFinder = options.recovery === false ? null : new PlaceFinder(reference.chroma, this.sampleRate / this.hop);
@@ -150,6 +165,8 @@ export class DeviceAligner {
     this.seeks.push({ sample: this.takeChunks.length * this.hop, target, liveBefore: this.follower.currentFrame });
     this.follower.seek(target);
     this.placeFinder?.reset();
+    this.recentCount = 0;
+    this.follower.stepSize = this.baseStep;
     this.atEndSince = null;
     this.completed = false;
   }
@@ -208,6 +225,7 @@ export class DeviceAligner {
       this.lastPlayed = index;
       const used = this.follower.step(this.liveChroma, released * 12);
       if (!used) continue;
+      this.adaptStep();
       this.recover(released);
       const q = this.quarterOfFrame(this.follower.currentFrame);
       if (q !== this.lastQuarter) {
@@ -230,6 +248,19 @@ export class DeviceAligner {
     return moved;
   }
 
+  // A player well ahead of the score's tempo needs the server's larger step to be followed.
+  private adaptStep(): void {
+    if (this.baseStep >= 3) return;
+    const ring = this.recentFollower;
+    const slot = this.recentCount % FAST_PLAYER_WINDOW;
+    const before = ring[slot]; // FAST_PLAYER_WINDOW used frames ago, once the ring is full
+    ring[slot] = this.follower.currentFrame;
+    this.recentCount += 1;
+    if (this.recentCount <= FAST_PLAYER_WINDOW) return;
+    const rate = (this.follower.currentFrame - before) / FAST_PLAYER_WINDOW;
+    this.follower.stepSize = rate > FAST_PLAYER_RATIO ? 3 : this.baseStep;
+  }
+
   // Lost? Move the follower to where the last few seconds of playing really are, and record it
   // like a jump so the post-take pass aligns before and after it separately (a restarted phrase
   // can't be one forward-only alignment).
@@ -242,9 +273,11 @@ export class DeviceAligner {
     const last = this.seeks[this.seeks.length - 1];
     const sample = Math.max(found.startTakeFrame * this.hop, last ? last.sample + this.hop : 0);
     const before = this.followerAt[Math.max(0, found.startTakeFrame - 1)] ?? this.follower.currentFrame;
-    this.seeks.push({ sample, target: found.startRefFrame, liveBefore: before });
+    this.seeks.push({ sample, target: found.startRefFrame, liveBefore: before, found: true });
     this.follower.seek(found.target);
     this.recoveries += 1;
+    this.recentCount = 0;
+    this.follower.stepSize = this.baseStep;
     finder.reset();
   }
 
@@ -273,20 +306,23 @@ export class DeviceAligner {
     const gate = new PlayingGate<number>();
     const tonal: number[] = [];
     for (let t = 0; t < frames; t += 1) tonal.push(...gate.push(t, features, t * 12, this.offlineLow[t], this.offlineRms[t]));
-    return alignFromFeatures(
-      {
-        take,
-        sampleRate: this.sampleRate,
-        hop: this.hop,
-        nFft: this.nFft,
-        reference: this.reference.chroma,
-        refFrameQuarter: this.reference.frameQuarter,
-        seeks: this.seeks,
-        liveFinal: this.follower.currentFrame
-      },
-      features,
-      frames,
-      tonal
-    );
+    const input = {
+      take,
+      sampleRate: this.sampleRate,
+      hop: this.hop,
+      nFft: this.nFft,
+      reference: this.reference.chroma,
+      refFrameQuarter: this.reference.frameQuarter,
+      seeks: this.seeks,
+      liveFinal: this.follower.currentFrame
+    };
+    const withMoves = alignScored(input, features, frames, tonal);
+    if (!this.seeks.some((s) => s.found)) return withMoves.path;
+    // The place finder's moves are a guess about the take: a restart they caught can't be one
+    // forward-only alignment, but a wrong move would split the take at the wrong place and grade
+    // notes against the wrong audio. Align both ways and keep whichever explains the take better.
+    const without = alignScored({ ...input, seeks: this.seeks.filter((s) => !s.found) }, features, frames, tonal);
+    this.postTakeChoice = { withMoves: withMoves.cost, without: without.cost };
+    return withMoves.cost < PLACE_MOVES_KEPT_RATIO * without.cost ? withMoves.path : without.path;
   }
 }
