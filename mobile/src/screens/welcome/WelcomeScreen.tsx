@@ -1,9 +1,11 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { Text } from '@/components/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Display, GoldButton, TextButton, Wood } from '@/components/ui';
 import type { LayoutMode } from '@/theme/settings';
 import { colors, fonts, gutters } from '@/theme/tokens';
+import { go, goChild } from '@/navigation/go';
 
 export function WelcomeScreen({ layout }: { layout: LayoutMode }) {
   const tablet = layout === 'tablet';
@@ -23,8 +25,8 @@ export function WelcomeScreen({ layout }: { layout: LayoutMode }) {
           </Text>
         </View>
         <View style={[styles.actions, tablet && { maxWidth: 420 }]}>
-          <GoldButton label="Begin" href="/add-music" style={{ minHeight: 52 }} />
-          <TextButton label="Check my microphone first" tone="muted" href="/mic-check" style={{ alignSelf: 'center' }} />
+          <GoldButton label="Begin" onPress={() => go({ kind: 'add-music' })} style={{ minHeight: 52 }} />
+          <TextButton label="Check my microphone first" tone="muted" onPress={() => goChild({ kind: 'settings', screen: 'mic-check' })} style={{ alignSelf: 'center' }} />
         </View>
       </SafeAreaView>
     </Wood>

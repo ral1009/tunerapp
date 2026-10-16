@@ -1,7 +1,7 @@
 import * as DocumentPicker from 'expo-document-picker';
-import { router } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { Arrow, BackLink, Body, Display, Eyebrow, Purfling, Screen, Serif, useGutter, Wood } from '@/components/ui';
 import { ServerStatusLine } from '@/components/ServerStatus';
@@ -9,12 +9,17 @@ import { useLibrary } from '@/data/libraryStore';
 import { setPendingUpload, uploadKindOf } from '@/data/pendingUpload';
 import type { LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { go, goChild, goUp } from '@/navigation/go';
 import { Tappable } from '@/components/Tappable';
 
 // Add a piece: a new score (name it, then photograph or add each page -- see New score), or open a
 // file (MusicXML is used as-is; a PDF or photo is read like a new score's pages).
 export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
   const tablet = layout === 'tablet';
+  // The photo card and the other ways in sit side by side on an iPad on its side, one above the
+  // other when it's upright.
+  const window = useWindowDimensions();
+  const sideBySide = tablet && window.width > window.height;
   const g = useGutter(layout);
   const [message, setMessage] = useState<string | null>(null);
   const library = useLibrary();
@@ -30,7 +35,7 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
     if (!isXml && kind) {
       // A PDF or photo opened here becomes a new score named after the file.
       setPendingUpload({ kind: 'pages', title: asset.name.replace(/\.[^.]+$/, '') || 'New score', files: [{ kind, uri: asset.uri, name: asset.name, mimeType: asset.mimeType ?? '', file: asset.file }] });
-      router.push('/reading');
+      goChild({ kind: 'add-music', screen: 'reading' });
       return;
     }
     if (!isXml) {
@@ -38,13 +43,13 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
       return;
     }
     setPendingUpload({ kind: 'musicxml', uri: asset.uri, name: asset.name, mimeType: asset.mimeType ?? '', file: asset.file });
-    router.push('/reading');
+    goChild({ kind: 'add-music', screen: 'reading' });
   };
 
   const starters = library.pieces.filter((p) => p.source === 'sample');
 
   const photoPanel = (
-    <Tappable onPress={() => router.push('/new-score')} haptic accessibilityRole="button" accessibilityLabel="New score: name it, then photograph each page" style={[styles.photo, tablet && { height: 420 }]}>
+    <Tappable onPress={() => goChild({ kind: 'add-music', screen: 'new-score' })} haptic accessibilityRole="button" accessibilityLabel="New score: name it, then photograph each page" style={[styles.photo, tablet && { height: 420 }]}>
       <Wood variant="hero" style={StyleSheet.absoluteFill} />
       <Purfling />
       <View style={styles.camera} accessibilityElementsHidden>
@@ -75,7 +80,7 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
           <Eyebrow tone="muted">Or start with</Eyebrow>
           <View style={{ marginTop: 10 }}>
             {starters.map((p) => (
-              <Tappable key={p.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/piece/[id]', params: { id: p.id } })} style={styles.starter}>
+              <Tappable key={p.id} accessibilityRole="link" onPress={() => go({ kind: 'piece', id: p.id })} style={styles.starter}>
                 <View style={{ flex: 1, gap: 3 }}>
                   <Serif size={18}>{p.title}</Serif>
                   <Text style={styles.hint}>{p.measureCount} bars · {p.composer}</Text>
@@ -93,13 +98,13 @@ export function AddMusicScreen({ layout }: { layout: LayoutMode }) {
     <Screen layout={layout}>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         <View style={{ paddingLeft: g - 10, paddingTop: 6 }}>
-          <BackLink label="Library" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
+          <BackLink label="Library" onPress={() => goUp({ kind: 'library' })} />
         </View>
         <Display size={tablet ? 64 : 44} style={{ paddingHorizontal: g, marginTop: 18 }}>Add music</Display>
         <ServerStatusLine quietWhenOnline style={{ paddingHorizontal: g, marginTop: 12 }} />
-        <View style={[{ paddingHorizontal: tablet ? g : 16, marginTop: 26 }, tablet && styles.bodyTablet]}>
-          <View style={tablet ? { flex: 1.1 } : null}>{photoPanel}</View>
-          <View style={[tablet ? { flex: 1 } : { paddingHorizontal: 12, marginTop: 10 }]}>{others}</View>
+        <View style={[{ paddingHorizontal: tablet ? g : 16, marginTop: 26 }, sideBySide && styles.bodyTablet]}>
+          <View style={sideBySide ? { flex: 1.1 } : null}>{photoPanel}</View>
+          <View style={[sideBySide ? { flex: 1 } : { paddingHorizontal: tablet ? 0 : 12, marginTop: tablet ? 36 : 10 }]}>{others}</View>
         </View>
       </ScrollView>
     </Screen>

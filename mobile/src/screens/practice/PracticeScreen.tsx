@@ -1,12 +1,13 @@
-import { router } from 'expo-router';
+import { useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { Animated, Easing, StyleSheet, TextInput, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import type { EngineEvent } from '@core/score/engine/protocol';
 import type { CursorNoteInfo, QuarterIndexEntry } from '@core/score/renderer/scoreCursor';
 
 import { firstPosition, nearestNote } from '@/audio/notes';
-import { BackLink, Display, Eyebrow, GoldButton, IntonationScale, paperSheet, Progress, Purfling, Screen, TextButton, useGutter, Wood } from '@/components/ui';
+import { BackLink, ConfirmSheet, Display, Eyebrow, GoldButton, IntonationScale, paperSheet, Progress, Purfling, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { ServerStatusLine } from '@/components/ServerStatus';
 import { useLibrary } from '@/data/libraryStore';
 import { useTakes } from '@/data/takesStore';
@@ -19,6 +20,7 @@ import { ScoreView, type ScoreViewHandle } from '@/score/ScoreView';
 import { useScoreTheme, useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { useStayAwake } from '@/components/useStayAwake';
+import { go, goSibling, goUp } from '@/navigation/go';
 
 export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutMode; id: string; fromBar?: number; toBar?: number }) {
   useStayAwake('practice');
@@ -76,8 +78,39 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
 
   // A whole-piece take goes straight to its review.
   useEffect(() => {
-    if (practice.phase === 'done' && lastTakeId && !practice.looping) router.replace({ pathname: '/review', params: { takeId: lastTakeId } });
-  }, [practice.phase, lastTakeId, practice.looping]);
+    if (practice.phase === 'done' && lastTakeId && !practice.looping) goSibling(id, 'review', { takeId: lastTakeId });
+  }, [practice.phase, lastTakeId, practice.looping, id]);
+
+  // Leaving in the middle of a take (back link, Android back, or anything else that would close
+  // the screen) asks first: throw it away, grade what was played, or carry on. The iOS swipe-back
+  // can't be paused for a question, so it's off while a take is running.
+  const navigation = useNavigation();
+  const midTake = practice.phase === 'playing';
+  const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null);
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: !midTake });
+    if (!midTake) return;
+    return navigation.addListener('beforeRemove', (event) => {
+      event.preventDefault();
+      setPendingLeave(() => () => navigation.dispatch(event.data.action));
+    });
+  }, [navigation, midTake]);
+  // Back through this screen's own navigation, so the question above gets asked (expo-router's
+  // back goes through the browser history on the web build, which skips it).
+  const leave = () => (navigation.canGoBack() ? navigation.goBack() : goUp({ kind: 'piece', id }));
+  const leaveSheet = (
+    <ConfirmSheet
+      visible={pendingLeave !== null && midTake}
+      title="Stop this take?"
+      message="You can grade what you've played so far, or throw it away."
+      onDismiss={() => setPendingLeave(null)}
+      actions={[
+        { label: 'Grade it', onPress: () => { setPendingLeave(null); practice.finish(true); } },
+        { label: 'Discard', onPress: () => { const leave = pendingLeave; setPendingLeave(null); leave?.(); } },
+        { label: 'Keep playing', onPress: () => setPendingLeave(null) },
+      ]}
+    />
+  );
 
   useEffect(() => {
     if (region && notes) score.current?.send({ type: 'selectBars', from: region.fromBar - 1, to: region.toBar - 1 });
@@ -87,7 +120,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
     return (
       <Screen layout={layout}>
         <View style={{ padding: g, gap: 16 }}>
-          <BackLink label="Library" onPress={() => router.replace('/')} />
+          <BackLink label="Library" onPress={() => go({ kind: 'library' })} />
           <Display size={36}>This piece isn&rsquo;t in your library</Display>
         </View>
       </Screen>
@@ -151,7 +184,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
       <GoldButton
         label={region ? 'Stop looping' : 'Finish'}
         style={styles.finish}
-        onPress={() => (practice.phase === 'playing' || practice.phase === 'ready' ? practice.finish(true) : router.back())}
+        onPress={() => (practice.phase === 'playing' || practice.phase === 'ready' ? practice.finish(true) : goUp({ kind: 'piece', id }))}
       />
     );
 
@@ -233,7 +266,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
       <View style={{ flex: 1 }}>
         <View style={[styles.header, { paddingLeft: g - 10, paddingRight: g }]}>
           <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 18 }}>
-            <BackLink label={tablet ? 'Music' : piece.title} onPress={() => router.back()} />
+            <BackLink label={tablet ? 'Back' : piece.title} onPress={leave} />
             {tablet ? (
               <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'baseline', gap: 14 }}>
                 <Display size={28} numberOfLines={1} style={{ flexShrink: 1 }}>{piece.title}</Display>
@@ -242,9 +275,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
             ) : null}
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-            <Text style={styles.of}>Bar</Text>
-            <Display size={tablet ? 30 : 24}>{bar ?? '·'}</Display>
-            <Text style={styles.of}>of {measureCount}</Text>
+            <BarCounter bar={bar} total={measureCount} size={tablet ? 30 : 24} />
           </View>
         </View>
         <Progress value={bar && measureCount ? bar / measureCount : 0} style={{ marginHorizontal: g, marginBottom: 8 }} />
@@ -257,6 +288,7 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
         />
         {band}
       </View>
+      {leaveSheet}
     </Screen>
   );
 }
@@ -275,6 +307,28 @@ function LiveReadout({ liveHz, a4, statusLine, tablet }: { liveHz: LiveValue<num
         <Text style={[styles.caption, statusLine ? styles.captionStatus : null]} numberOfLines={2}>{caption}</Text>
       </View>
       {cents !== null ? <Text style={styles.cents}>{cents >= 0 ? '+' : '−'}{Math.abs(cents)}¢</Text> : null}
+    </View>
+  );
+}
+
+// "Bar 7 of 12". Until the follower knows where you are it just says how long the piece is (no
+// placeholder dot). The number sits in a box as wide as the longest bar number, so the line
+// doesn't shift as it grows, and each new number rises in quickly instead of popping.
+function BarCounter({ bar, total, size }: { bar: number | null; total: number; size: number }) {
+  const [rise] = useState(() => new Animated.Value(1));
+  useEffect(() => {
+    if (bar === null) return;
+    rise.setValue(0);
+    Animated.timing(rise, { toValue: 1, duration: 180, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [bar, rise]);
+  if (bar === null) return <Text style={styles.of}>{total} bars</Text>;
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }} accessible accessibilityLabel={`Bar ${bar} of ${total}`}>
+      <Text style={styles.of}>Bar</Text>
+      <Animated.View style={{ minWidth: Math.round(size * 0.62 * String(total).length), alignItems: 'center', opacity: rise, transform: [{ translateY: rise.interpolate({ inputRange: [0, 1], outputRange: [size * 0.25, 0] }) }] }}>
+        <Display size={size}>{bar}</Display>
+      </Animated.View>
+      <Text style={styles.of}>of {total}</Text>
     </View>
   );
 }

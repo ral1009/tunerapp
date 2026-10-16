@@ -1,13 +1,15 @@
 import { Link } from 'expo-router';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { NavBar } from '@/components/nav';
-import { Display, Eyebrow, GoldButton, Progress, Screen, Wood } from '@/components/ui';
+import { Display, Eyebrow, fitTitleSize, GoldButton, Progress, Screen, Wood } from '@/components/ui';
 import { useLibrary, type Piece } from '@/data/libraryStore';
 import { takeScore, useTakes, type Take } from '@/data/takesStore';
 import { useSettings } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { Tappable } from '@/components/Tappable';
+import { go, hrefFor } from '@/navigation/go';
 
 export function pieceSubtitle(piece: Piece): string {
   const source = piece.source === 'sample' ? 'Starter piece' : piece.source === 'photo' ? 'from a photo' : 'from a file';
@@ -65,6 +67,7 @@ export function LibraryPhone() {
   const status = usePieceStatus();
   const others = pieces.filter((p) => p.id !== current?.id);
   const currentStatus = current ? status(current.id) : null;
+  const window = useWindowDimensions();
   return (
     <Screen layout="phone" edges={[]} glow={false}>
       <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
@@ -82,9 +85,9 @@ export function LibraryPhone() {
             {current ? (
               <>
                 <Eyebrow tone="bright">{current.openedAt ? 'Continue' : 'Start here'} · {current.measureCount} bars</Eyebrow>
-                <Link href={{ pathname: '/piece/[id]', params: { id: current.id } }} asChild>
+                <Link href={hrefFor({ kind: 'piece', id: current.id })} asChild>
                   <Tappable accessibilityRole="link" style={{ gap: 6 }}>
-                    <Display size={current.title.length > 14 ? 50 : 66} numberOfLines={2} style={styles.heroTitle}>{current.title}</Display>
+                    <Display size={fitTitleSize(current.title, Math.min(window.width, 520) - 56, 66)} numberOfLines={2} style={styles.heroTitle}>{current.title}</Display>
                     <Text style={styles.heroSub} numberOfLines={1}>{pieceSubtitle(current)}</Text>
                   </Tappable>
                 </Link>
@@ -93,7 +96,7 @@ export function LibraryPhone() {
                   <Text style={styles.heroNote}>
                     {currentStatus?.score !== null && currentStatus?.score !== undefined ? `${currentStatus.score}% in tune last take` : 'Not played yet'}
                   </Text>
-                  <GoldButton label={current.openedAt ? 'Resume' : 'Begin'} href={{ pathname: '/practice', params: { id: current.id } }} />
+                  <GoldButton label={current.openedAt ? 'Resume' : 'Begin'} onPress={() => go({ kind: 'piece', id: current.id, screen: 'practice' })} />
                 </View>
               </>
             ) : (
@@ -114,7 +117,7 @@ export function LibraryPhone() {
             {others.map((piece, i) => {
               const s = status(piece.id);
               return (
-                <Link key={piece.id} href={{ pathname: '/piece/[id]', params: { id: piece.id } }} asChild>
+                <Link key={piece.id} href={hrefFor({ kind: 'piece', id: piece.id })} asChild>
                   <Tappable accessibilityRole="link" style={styles.row}>
                     <Text style={styles.numeral}>{roman(i + (current ? 2 : 1))}</Text>
                     <View style={{ flex: 1, gap: 3 }}>

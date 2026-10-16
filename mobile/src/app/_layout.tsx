@@ -14,9 +14,14 @@ import { useEffect } from 'react';
 import { LibraryProvider, useLibrary } from '@/data/libraryStore';
 import { TakesProvider } from '@/data/takesStore';
 import { SettingsProvider, useSettings } from '@/theme/settings';
+import { setRootNavigation } from '@/navigation/go';
+import { stackOptions, tabOptions } from '@/navigation/stackOptions';
 import { colors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync();
+
+// Library is always the bottom of the stack, even when the app opens on a deeper screen.
+export const unstable_settings = { initialRouteName: 'index' };
 
 const theme = { ...DarkTheme, colors: { ...DarkTheme.colors, background: colors.ebony, card: colors.ebony, primary: colors.gold, text: colors.ink } };
 
@@ -55,5 +60,17 @@ function Gate({ ready }: { ready: boolean }) {
     if (show) SplashScreen.hideAsync();
   }, [show]);
   if (!show) return null;
-  return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.ebony }, animation: 'fade' }} />;
+  return (
+    <Stack
+      screenOptions={stackOptions}
+      screenListeners={({ navigation }) => {
+        setRootNavigation(navigation);
+        return {};
+      }}
+    >
+      <Stack.Screen name="index" />
+      <Stack.Screen name="tuner" options={tabOptions} />
+      <Stack.Screen name="settings" options={tabOptions} />
+    </Stack>
+  );
 }

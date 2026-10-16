@@ -1,17 +1,18 @@
-import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { gradingOptions, summarizePracticeSession } from '@core/practice/reviewSummary';
 import type { EngineEvent } from '@core/score/engine/protocol';
 
-import { BackLink, Body, Choice, Display, Eyebrow, GoldButton, paperSheet, Screen, TextButton, useGutter, Wood } from '@/components/ui';
+import { BackLink, bigNumeral, Body, Choice, Display, Eyebrow, GoldButton, paperSheet, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { useLibrary } from '@/data/libraryStore';
 import { takeScore, useTakes } from '@/data/takesStore';
 import { barsLabel, GRADE_COLORS, highlightsFor, problemSpots } from '@/practice/grading';
 import { ScoreView, type ScoreViewHandle } from '@/score/ScoreView';
 import { useScoreTheme, useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
+import { go, goSibling, goUp } from '@/navigation/go';
 
 function when(at: number): string {
   const d = new Date(at);
@@ -25,6 +26,10 @@ const inWords = (n: number) => (n <= 10 ? WORDS[n] : String(n));
 
 export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: string }) {
   const tablet = layout === 'tablet';
+  const window = useWindowDimensions();
+  // The big percentage fits the screen it's on: a small phone, or any phone turned sideways, gets
+  // a smaller one rather than a number cut off at the edge.
+  const percentSize = Math.round(Math.min(tablet ? 230 : 176, window.width * (tablet ? 0.3 : 0.42), window.height * 0.24));
   const g = useGutter(layout);
   const takes = useTakes();
   const library = useLibrary();
@@ -59,7 +64,7 @@ export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: s
     return (
       <Screen layout={layout}>
         <View style={{ padding: g, gap: 16 }}>
-          <BackLink label="Library" onPress={() => router.replace('/')} />
+          <BackLink label="Library" onPress={() => go({ kind: 'library' })} />
           <Display size={36}>This take isn&rsquo;t available</Display>
         </View>
       </Screen>
@@ -80,11 +85,11 @@ export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: s
       : 'Your first graded take of this';
   const drift = summary.stringDriftCents;
   const c = GRADE_COLORS.ebony;
-  const replay = { pathname: '/practice' as const, params: take.region ? { id: piece.id, from: String(take.region.fromBar), to: String(take.region.toBar) } : { id: piece.id } };
+  const replay = () => goSibling(piece.id, 'practice', take.region ? { from: String(take.region.fromBar), to: String(take.region.toBar) } : undefined);
 
   const header = (
     <View style={[styles.header, { paddingLeft: g - 10, paddingRight: g }]}>
-      <BackLink label={piece.title} tone="light" onPress={() => router.replace({ pathname: '/piece/[id]', params: { id: piece.id } })} />
+      <BackLink label={piece.title} tone="light" onPress={() => goUp({ kind: 'piece', id: piece.id })} />
       <Eyebrow tone="muted">{when(take.at)}{take.region ? ` · bars ${take.region.fromBar}–${take.region.toBar}` : ''}</Eyebrow>
     </View>
   );
@@ -93,8 +98,8 @@ export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: s
     <View style={{ alignItems: tablet ? 'flex-start' : 'center' }}>
       <Eyebrow tone="gold" style={tablet ? { fontSize: 11, letterSpacing: 5 } : undefined}>In tune</Eyebrow>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginTop: 4 }}>
-        <Text style={[styles.percent, tablet && styles.percentTablet]}>{percent ?? '—'}</Text>
-        {percent !== null ? <Text style={[styles.percentSign, tablet && { fontSize: 36, marginTop: 30 }]}>%</Text> : null}
+        <Text style={[styles.percent, bigNumeral(percentSize), { letterSpacing: -percentSize / 40 }]}>{percent ?? '—'}</Text>
+        {percent !== null ? <Text style={[styles.percentSign, { fontSize: Math.round(percentSize * 0.16), marginTop: Math.round(percentSize * 0.13) }]}>%</Text> : null}
       </View>
       <Text style={[styles.comparison, !tablet && { textAlign: 'center' }]}>
         {comparison} · {summary.averageCentsError.toFixed(0)} cents off on average
@@ -165,7 +170,7 @@ export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: s
                 label={spot.fromBar === spot.toBar ? `Loop bar ${spot.fromBar}` : `Loop bars ${spot.fromBar}–${spot.toBar}`}
                 tone="gold"
                 arrow
-                href={{ pathname: '/practice', params: { id: piece.id, from: String(spot.fromBar), to: String(spot.toBar) } }}
+                onPress={() => goSibling(piece.id, 'practice', { from: String(spot.fromBar), to: String(spot.toBar) })}
               />
             </View>
           ))}
@@ -176,11 +181,39 @@ export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: s
 
   const scoreView = <ScoreView ref={score} xml={piece.xml} theme={theme} onEvent={onEngine} style={[{ flex: 1 }, theme === 'paper' && paperSheet]} />;
 
+  // An upright iPad stacks the two halves: the wood with the result on top, the bars worth a look
+  // and the score below. Side by side they'd each get too narrow a column.
+  if (tablet && window.height > window.width) {
+    return (
+      <Screen layout={layout} edges={[]} glow={false}>
+        <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+          <Wood variant="hero" style={{ paddingTop: 40, paddingBottom: 36 }}>
+            {header}
+            <View style={{ paddingHorizontal: g, paddingTop: 48 }}>
+              {headline}
+              <View style={{ marginTop: 40 }}>{counts}</View>
+            </View>
+          </Wood>
+          <View style={{ paddingHorizontal: g }}>
+            {notes}
+            <View style={{ marginTop: 32 }}>{strictness}</View>
+            <View style={{ marginTop: 36 }}>{spotList}</View>
+            <View style={{ height: Math.round(window.height * 0.5), marginTop: 30 }}>{scoreView}</View>
+            <View style={styles.actionsTablet}>
+              <TextButton label="Back to the piece" onPress={() => goUp({ kind: 'piece', id: piece.id })} />
+              <GoldButton label="Play again" onPress={replay} />
+            </View>
+          </View>
+        </ScrollView>
+      </Screen>
+    );
+  }
+
   if (tablet) {
     return (
       <Screen layout={layout} edges={[]} glow={false}>
         <View style={{ flex: 1, flexDirection: 'row' }}>
-          <Wood variant="side" style={{ width: 600 }}>
+          <Wood variant="side" style={{ width: Math.min(600, window.width * 0.5) }}>
             <View style={{ paddingTop: 40 }}>{header}</View>
             <ScrollView contentContainerStyle={{ paddingHorizontal: g, paddingTop: 110, paddingBottom: 40, gap: 0 }}>
               {headline}
@@ -193,8 +226,8 @@ export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: s
             {spotList}
             <View style={{ flex: 1, marginTop: 30 }}>{scoreView}</View>
             <View style={styles.actionsTablet}>
-              <TextButton label="Back to the piece" onPress={() => router.replace({ pathname: '/piece/[id]', params: { id: piece.id } })} />
-              <GoldButton label="Play again" href={replay} />
+              <TextButton label="Back to the piece" onPress={() => goUp({ kind: 'piece', id: piece.id })} />
+              <GoldButton label="Play again" onPress={replay} />
             </View>
           </View>
         </View>
@@ -216,8 +249,8 @@ export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: s
         </View>
         <View style={{ height: 360, marginHorizontal: 12, marginTop: 18 }}>{scoreView}</View>
         <View style={[styles.actionsPhone, { paddingHorizontal: g }]}>
-          <TextButton label="Back to the piece" onPress={() => router.replace({ pathname: '/piece/[id]', params: { id: piece.id } })} />
-          <GoldButton label="Play again" href={replay} />
+          <TextButton label="Back to the piece" onPress={() => goUp({ kind: 'piece', id: piece.id })} />
+          <GoldButton label="Play again" onPress={replay} />
         </View>
       </ScrollView>
     </Screen>
@@ -226,8 +259,7 @@ export function ReviewScreen({ layout, takeId }: { layout: LayoutMode; takeId: s
 
 const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  percent: { fontFamily: fonts.display, fontSize: 176, lineHeight: 164, letterSpacing: -4, color: '#F6EEDC', textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 30 },
-  percentTablet: { fontSize: 230, lineHeight: 206, letterSpacing: -6 },
+  percent: { fontFamily: fonts.display, color: '#F6EEDC', textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 30 },
   percentSign: { fontFamily: fonts.serif, fontSize: 28, color: '#E9D5AE', marginTop: 22, marginLeft: 6 },
   comparison: { fontFamily: fonts.display, fontSize: 16, color: colors.cream, marginTop: 10 },
   counts: { flexDirection: 'row', gap: 12 },

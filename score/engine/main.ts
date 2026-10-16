@@ -152,6 +152,7 @@ async function receive(command: EngineCommand): Promise<void> {
         return;
       }
       case "theme":
+        if (command.theme === currentTheme) return;
         applyTheme(command.theme);
         if (currentXml) await render();
         return;
@@ -230,11 +231,18 @@ window.addEventListener("message", (event: MessageEvent) => {
   const data = typeof event.data === "string" ? safeParse(event.data) : event.data;
   if (data && typeof data === "object" && "type" in data) void receive(data as EngineCommand);
 });
-// OSMD re-lays out on resize (autoResize); pages are re-sized first (this listener is added before
-// OSMD's), and the selection follows the bars.
+// OSMD re-lays out on resize (autoResize, which restores the cursor onto the new layout); pages
+// are re-sized first (this listener is added before OSMD's). Once it settles, the selection
+// follows the bars and the cursor's line is brought back into view -- turning the device
+// shouldn't lose your place in the music.
+let resizeSettle: ReturnType<typeof setTimeout> | null = null;
 window.addEventListener("resize", () => {
   sizePages();
-  setTimeout(drawSelection, 400);
+  if (resizeSettle) clearTimeout(resizeSettle);
+  resizeSettle = setTimeout(() => {
+    drawSelection();
+    keepCursorInView();
+  }, 400);
 });
 
 function safeParse(text: string): unknown {

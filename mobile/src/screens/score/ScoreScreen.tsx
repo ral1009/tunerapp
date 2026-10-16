@@ -1,17 +1,20 @@
-import { router } from 'expo-router';
 import { useEffect } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Text } from '@/components/Text';
 
-import { BackLink, Display, GoldButton, Screen, TextButton, useGutter } from '@/components/ui';
+import { BackLink, Display, GoldButton, Purfling, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { useLibrary } from '@/data/libraryStore';
 import { ScoreView } from '@/score/ScoreView';
 import { useScoreTheme, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { useStayAwake } from '@/components/useStayAwake';
+import { go, goSibling, goUp } from '@/navigation/go';
 
 // Reading the music: the score on its own, as printed pages on an iPad (each page fits the screen
 // whole when the iPad is upright) and as one continuous strip on a phone. Practise opens the
-// practice screen; Details opens the piece's progress and takes. Annotation will live here later.
+// practice screen; back goes to the piece's progress and takes. Annotation will live here later.
+// The header is the screen's one lit wood surface, edged with purfling where the music begins.
 export function ScoreScreen({ layout, id }: { layout: LayoutMode; id: string }) {
   useStayAwake('score');
   const tablet = layout === 'tablet';
@@ -20,6 +23,7 @@ export function ScoreScreen({ layout, id }: { layout: LayoutMode; id: string }) 
   const piece = library.get(id);
   const theme = useScoreTheme();
   const { update } = library;
+  const insets = useSafeAreaInsets();
 
   // Opening a piece makes it the one "Continue" offers.
   useEffect(() => {
@@ -31,17 +35,16 @@ export function ScoreScreen({ layout, id }: { layout: LayoutMode; id: string }) 
     return (
       <Screen layout={layout}>
         <View style={{ padding: g, gap: 16 }}>
-          <BackLink label="Library" onPress={() => router.replace('/')} />
+          <BackLink label="Library" onPress={() => go({ kind: 'library' })} />
           <Display size={36}>This piece isn&rsquo;t in your library</Display>
         </View>
       </Screen>
     );
   }
 
-  const params = { id: piece.id };
   const issues = piece.measureIssues.length;
   const details = [piece.composer || null, `${piece.measureCount} bars`].filter(Boolean).join(' · ');
-  const back = () => (router.canGoBack() ? router.back() : router.replace('/'));
+  const back = () => goUp({ kind: 'piece', id });
   const title = <Display size={tablet ? 34 : 28} numberOfLines={tablet ? 1 : 2}>{piece.title}</Display>;
   const subtitle = (
     <Text style={styles.details} numberOfLines={1}>
@@ -49,42 +52,41 @@ export function ScoreScreen({ layout, id }: { layout: LayoutMode; id: string }) 
       {issues ? <Text style={styles.issues}>{`  ·  ${issues} ${issues === 1 ? 'bar' : 'bars'} to check`}</Text> : null}
     </Text>
   );
-  const detailsButton = <TextButton label="Details" tone="muted" href={{ pathname: '/piece/[id]', params }} />;
-  const practise = <GoldButton label="Practise" href={{ pathname: '/practice', params }} style={styles.practise} />;
+  const practise = <GoldButton label="Practise" onPress={() => goSibling(id, 'practice')} style={styles.practise} />;
 
   return (
-    <Screen layout={layout} edges={['top']} glow={false}>
-      {tablet ? (
-        <View style={[styles.header, { paddingLeft: g - 10, paddingRight: g }]}>
-          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-            <BackLink label="Library" onPress={back} />
+    <Screen layout={layout} edges={[]} glow={false}>
+      <Wood variant="header" style={{ paddingTop: insets.top }}>
+        {tablet ? (
+          <View style={[styles.header, { paddingLeft: g - 10, paddingRight: g }]}>
+            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+              <BackLink label="Back" tone="light" onPress={back} />
+              <View style={{ paddingLeft: 10, gap: 2 }}>
+                {title}
+                {subtitle}
+              </View>
+            </View>
+            <View style={styles.actions}>
+              {issues ? <TextButton label="Fix bars" tone="gold" onPress={() => goSibling(id, 'fix-bar')} /> : null}
+              {practise}
+            </View>
+          </View>
+        ) : (
+          <View style={{ paddingLeft: g - 10, paddingRight: g, paddingTop: 4, paddingBottom: 10, gap: 4 }}>
+            <View style={[styles.actions, { justifyContent: 'space-between' }]}>
+              <BackLink label="Back" tone="light" onPress={back} />
+              <View style={styles.actions}>
+                {practise}
+              </View>
+            </View>
             <View style={{ paddingLeft: 10, gap: 2 }}>
               {title}
               {subtitle}
             </View>
           </View>
-          <View style={styles.actions}>
-            {issues ? <TextButton label="Fix bars" tone="gold" href={{ pathname: '/fix-bar', params }} /> : null}
-            {detailsButton}
-            {practise}
-          </View>
-        </View>
-      ) : (
-        <View style={{ paddingLeft: g - 10, paddingRight: g, paddingTop: 4, paddingBottom: 10, gap: 4 }}>
-          <View style={[styles.actions, { justifyContent: 'space-between' }]}>
-            <BackLink label="Library" onPress={back} />
-            <View style={styles.actions}>
-              {detailsButton}
-              {practise}
-            </View>
-          </View>
-          <View style={{ paddingLeft: 10, gap: 2 }}>
-            {title}
-            {subtitle}
-          </View>
-        </View>
-      )}
-      <View style={styles.rule} />
+        )}
+      </Wood>
+      <Purfling />
       <ScoreView
         xml={piece.xml}
         theme={theme}
@@ -101,6 +103,5 @@ const styles = StyleSheet.create({
   issues: { color: colors.close },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 24 },
   practise: { minHeight: 44, paddingHorizontal: 22 },
-  rule: { height: 1, backgroundColor: colors.ruleSoft },
   score: { flex: 1 },
 });

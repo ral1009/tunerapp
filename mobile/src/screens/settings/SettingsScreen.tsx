@@ -1,7 +1,8 @@
 import { Image } from 'expo-image';
 import { Link } from 'expo-router';
 import type { ReactNode } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { NavBar } from '@/components/nav';
 import { ServerStatusLine } from '@/components/ServerStatus';
@@ -10,6 +11,7 @@ import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { woodFor } from '@/theme/woods';
 import { Tappable } from '@/components/Tappable';
+import { hrefFor } from '@/navigation/go';
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
@@ -46,7 +48,7 @@ export function SettingsScreen({ layout }: { layout: LayoutMode }) {
             <Choice label="Score page" gap={16} value={settings.scoreTheme === 'ebony' ? 'ebony' : 'paper'} onChange={(value) => update({ scoreTheme: value })}
               options={[{ value: 'paper', label: 'Paper' }, { value: 'ebony', label: 'Ebony' }]} />
           </Row>
-          <Link href="/wood" asChild>
+          <Link href={hrefFor({ kind: 'settings', screen: 'wood' })} asChild>
             <Tappable accessibilityRole="link" style={styles.row}>
               <Text style={styles.label}>Wood</Text>
               <View style={styles.linkValue}>
@@ -93,7 +95,7 @@ export function SettingsScreen({ layout }: { layout: LayoutMode }) {
     {
       title: 'Microphone',
       rows: (
-        <Link href="/mic-check" asChild>
+        <Link href={hrefFor({ kind: 'settings', screen: 'mic-check' })} asChild>
           <Tappable accessibilityRole="link" style={styles.row}>
             <Text style={styles.label}>Check microphone</Text>
             <View style={styles.linkValue}>

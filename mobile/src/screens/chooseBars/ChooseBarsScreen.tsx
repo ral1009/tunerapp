@@ -1,6 +1,7 @@
-import { router } from 'expo-router';
+import { go, goSibling, goUp } from '@/navigation/go';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import type { EngineEvent } from '@core/score/engine/protocol';
 import type { CursorNoteInfo } from '@core/score/renderer/scoreCursor';
@@ -31,7 +32,7 @@ export function ChooseBarsScreen({ layout, id }: { layout: LayoutMode; id: strin
     return (
       <Screen layout={layout}>
         <View style={{ padding: g, gap: 16 }}>
-          <BackLink label="Library" onPress={() => router.replace('/')} />
+          <BackLink label="Library" onPress={() => go({ kind: 'library' })} />
           <Display size={36}>This piece isn&rsquo;t in your library</Display>
         </View>
       </Screen>
@@ -54,13 +55,13 @@ export function ChooseBarsScreen({ layout, id }: { layout: LayoutMode; id: strin
   const noteCount = range ? notes.filter((n) => n.measureIndex >= range.from && n.measureIndex <= range.to).length : 0;
   const label = range ? (range.from === range.to ? `Bar ${range.from + 1}` : `Bars ${range.from + 1} – ${range.to + 1}`) : 'No bars yet';
 
-  const start = () => range && router.replace({ pathname: '/practice', params: { id: piece.id, from: String(range.from + 1), to: String(range.to + 1) } });
+  const start = () => range && goSibling(piece.id, 'practice', { from: String(range.from + 1), to: String(range.to + 1) });
 
   return (
     <Screen layout={layout} edges={['top']}>
       <View style={{ flex: 1 }}>
         <View style={{ paddingLeft: g - 10, paddingTop: 6 }}>
-          <BackLink label={piece.title} onPress={() => router.back()} />
+          <BackLink label={piece.title} onPress={() => goUp({ kind: 'piece', id: piece.id })} />
         </View>
         <View style={[styles.title, { paddingHorizontal: g }]}>
           <Display size={tablet ? 52 : 34}>Loop a passage</Display>

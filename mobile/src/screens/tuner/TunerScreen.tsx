@@ -1,9 +1,10 @@
-import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
+import { Linking, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { frequencyOf, IN_TUNE_CENTS, nearestNote, tuningAdvice } from '@/audio/notes';
 import { currentStringCents, useTuner, useTunerLive, type TunerState } from '@/audio/useTuner';
 import { NavBar } from '@/components/nav';
-import { Display, IntonationScale, Screen, TextButton, useGutter, Wood } from '@/components/ui';
+import { bigNumeral, Display, IntonationScale, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { useStayAwake } from '@/components/useStayAwake';
@@ -19,19 +20,25 @@ export function TunerScreen({ layout }: { layout: LayoutMode }) {
   return (
     <Screen layout={layout} edges={tablet ? ['top', 'bottom'] : ['top']} glow={false}>
       <Wood variant="dim" style={StyleSheet.absoluteFill} />
-      <View style={{ flex: 1, paddingHorizontal: g }}>
+      {/* Scrolls only when the screen is too short for it all (a small phone turned sideways). */}
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1, paddingHorizontal: g }} bounces={false}>
         <View style={[styles.header, tablet && styles.headerTablet]}>
           {tablet ? <Display size={64}>Tuner</Display> : <Text style={styles.eyebrow}>Tuner</Text>}
           {tablet ? <NavBar current="tuner" layout="tablet" /> : <Text style={styles.ref}>A = {a4} Hz</Text>}
         </View>
         <TunerLive tuner={tuner} a4={a4} tablet={tablet} />
-      </View>
+      </ScrollView>
       {tablet ? null : <NavBar current="tuner" layout="phone" />}
     </Screen>
   );
 }
 
 function TunerLive({ tuner, a4, tablet }: { tuner: TunerState; a4: number; tablet: boolean }) {
+  const window = useWindowDimensions();
+  // The note letter is the screen's centrepiece, but it shrinks to fit a short (sideways) screen.
+  // A phone on its side puts the letter beside its readout instead of above it.
+  const wide = !tablet && window.width > window.height;
+  const letterSize = Math.round(Math.min(tablet ? 260 : 220, window.height * (wide ? 0.42 : 0.3), window.width * (wide ? 0.25 : 0.55)));
   const { micStatus, micError, restart } = tuner;
   const snap = useTunerLive(tuner.live);
   const { reading, heldHz, strings, currentString: current } = snap;
@@ -79,19 +86,22 @@ function TunerLive({ tuner, a4, tablet }: { tuner: TunerState; a4: number; table
 
   return (
     <>
-      <View style={styles.centre}>
-        <Text style={styles.stringLabel}>{stringLabel}</Text>
-        <Display size={tablet ? 260 : 220} style={{ lineHeight: tablet ? 250 : 210, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 40 }}>{letter}</Display>
-        <Text style={styles.hz}>{hzLine}</Text>
-        <Text style={styles.cents}>
-          {shownCents === null ? ' ' : `${shownCents > 0 ? '+' : shownCents < 0 ? '−' : ''}${Math.abs(Math.round(shownCents))}¢`}
-          <Text style={styles.advice}>{shownCents === null ? status : `  ${status}`}</Text>
-        </Text>
-        <View style={{ width: tablet ? 520 : '100%', marginTop: 22 }}>
-          <IntonationScale cents={shownCents} />
+      <View style={[styles.centre, wide && styles.centreWide]}>
+        {wide ? null : <Text style={styles.stringLabel}>{stringLabel}</Text>}
+        <Text style={[{ fontFamily: fonts.display, color: colors.bright, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 40 }, bigNumeral(letterSize)]}>{letter}</Text>
+        <View style={wide ? { flex: 1, alignItems: 'center' } : styles.readout}>
+          {wide ? <Text style={styles.stringLabel}>{stringLabel}</Text> : null}
+          <Text style={styles.hz}>{hzLine}</Text>
+          <Text style={[styles.cents, wide && { marginTop: 8 }]}>
+            {shownCents === null ? ' ' : `${shownCents > 0 ? '+' : shownCents < 0 ? '−' : ''}${Math.abs(Math.round(shownCents))}¢`}
+            <Text style={styles.advice}>{shownCents === null ? status : `  ${status}`}</Text>
+          </Text>
+          <View style={{ width: tablet ? 520 : '100%', marginTop: wide ? 12 : 22 }}>
+            <IntonationScale cents={shownCents} />
+          </View>
+          {micStatus === 'denied' && Platform.OS !== 'web' ? <TextButton label="Open settings" tone="gold" onPress={() => Linking.openSettings()} /> : null}
+          {micStatus === 'error' ? <TextButton label="Try again" tone="gold" onPress={restart} /> : null}
         </View>
-        {micStatus === 'denied' && Platform.OS !== 'web' ? <TextButton label="Open settings" tone="gold" onPress={() => Linking.openSettings()} /> : null}
-        {micStatus === 'error' ? <TextButton label="Try again" tone="gold" onPress={restart} /> : null}
       </View>
 
       <View style={{ paddingBottom: tablet ? 40 : 10 }}>
@@ -112,7 +122,9 @@ const styles = StyleSheet.create({
   headerTablet: { flexWrap: 'wrap', alignItems: 'flex-end', gap: 24, paddingTop: 40, paddingBottom: 26 },
   eyebrow: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 4.5, textTransform: 'uppercase', color: '#E9D5AE' },
   ref: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 3, textTransform: 'uppercase', color: colors.soft },
-  centre: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  centre: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12 },
+  centreWide: { flexDirection: 'row', gap: 32, paddingHorizontal: 12 },
+  readout: { alignSelf: 'stretch', alignItems: 'center' },
   stringLabel: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 4, textTransform: 'uppercase', color: colors.goldBright },
   hz: { fontFamily: fonts.sansLight, fontSize: 13, color: colors.cream },
   cents: { fontFamily: fonts.display, fontSize: 26, color: colors.goldBright, marginTop: 18, textAlign: 'center' },

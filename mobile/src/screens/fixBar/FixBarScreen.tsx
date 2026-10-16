@@ -1,6 +1,7 @@
-import { router } from 'expo-router';
+import { go, goUp } from '@/navigation/go';
 import { useEffect, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import type { ScoreMeasureIssue } from '@core/score/schema';
 import type { EngineEvent } from '@core/score/engine/protocol';
@@ -75,7 +76,7 @@ export function FixBarScreen({ layout, id }: { layout: LayoutMode; id: string })
     return (
       <Screen layout={layout}>
         <View style={{ padding: g, gap: 16 }}>
-          <BackLink label="Library" onPress={() => router.replace('/')} />
+          <BackLink label="Library" onPress={() => go({ kind: 'library' })} />
           <Display size={36}>This piece isn&rsquo;t in your library</Display>
         </View>
       </Screen>
@@ -184,7 +185,7 @@ export function FixBarScreen({ layout, id }: { layout: LayoutMode; id: string })
   ) : (
     <View style={{ paddingHorizontal: g, paddingTop: 24, paddingBottom: 32, gap: 18 }}>
       <Body>{issue ? 'This bar has no notes to edit yet.' : 'Nothing left to check. The score is ready to practise.'}</Body>
-      <GoldButton label="Back to the piece" onPress={() => router.back()} style={{ alignSelf: 'flex-start' }} />
+      <GoldButton label="Back to the piece" onPress={() => goUp({ kind: 'piece', id: piece.id })} style={{ alignSelf: 'flex-start' }} />
     </View>
   );
 
@@ -192,7 +193,7 @@ export function FixBarScreen({ layout, id }: { layout: LayoutMode; id: string })
     <Screen layout={layout} edges={['top']}>
       <View style={{ flex: 1 }}>
         <View style={[styles.top, { paddingLeft: g - 10, paddingRight: g }]}>
-          <BackLink label={piece.title} onPress={() => router.back()} />
+          <BackLink label={piece.title} onPress={() => goUp({ kind: 'piece', id: piece.id })} />
           {issues.length ? <Text style={styles.of}>{Math.min(issueIndex + 1, issues.length)} of {issues.length}</Text> : null}
         </View>
         {header}

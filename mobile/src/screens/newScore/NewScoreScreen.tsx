@@ -1,8 +1,9 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
-import { router } from 'expo-router';
+import { goChild, goUp } from '@/navigation/go';
 import { useState } from 'react';
-import { Image, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Image, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { BackLink, Body, Display, Eyebrow, GoldButton, Purfling, Screen, TextButton, useGutter, Wood } from '@/components/ui';
 import { ServerStatusLine } from '@/components/ServerStatus';
@@ -84,10 +85,10 @@ export function NewScoreScreen({ layout }: { layout: LayoutMode }) {
 
   const read = () => {
     setPendingUpload({ kind: 'pages', title: title.trim() || 'New score', files });
-    router.push('/reading');
+    goChild({ kind: 'add-music', screen: 'reading' });
   };
 
-  const back = () => (named ? setNamed(false) : router.canGoBack() ? router.back() : router.replace('/add-music'));
+  const back = () => (named ? setNamed(false) : goUp({ kind: 'add-music' }));
 
   if (!named) {
     const next = () => title.trim() && setNamed(true);

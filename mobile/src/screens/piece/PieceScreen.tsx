@@ -1,25 +1,29 @@
-import { Link, router } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Link } from 'expo-router';
+import { useEffect, useMemo } from 'react';
+import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Text } from '@/components/Text';
 
-import type { EngineEvent, ScoreMeta } from '@core/score/engine/protocol';
+import type { EngineEvent } from '@core/score/engine/protocol';
 
-import { Arrow, BackLink, Body, Display, Eyebrow, GoldButton, Screen, Serif, useGutter, Wood } from '@/components/ui';
-import { useLibrary } from '@/data/libraryStore';
+import { NavBar } from '@/components/nav';
+import { Arrow, BackLink, fitTitleSize, Body, Display, Eyebrow, GoldButton, Screen, Serif, useGutter, Wood } from '@/components/ui';
+import { useLibrary, xmlKey } from '@/data/libraryStore';
 import { gradedTake, takeScore, useTakes } from '@/data/takesStore';
 import { useSettings } from '@/theme/settings';
 import { ScoreView } from '@/score/ScoreView';
 import { useScoreTheme, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { Tappable } from '@/components/Tappable';
+import { go, goChild, goUp, hrefFor } from '@/navigation/go';
 
 export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) {
   const tablet = layout === 'tablet';
   const g = useGutter(layout);
+  const window = useWindowDimensions();
+  const upright = window.height > window.width;
   const library = useLibrary();
   const piece = library.get(id);
   const theme = useScoreTheme();
-  const [meta, setMeta] = useState<ScoreMeta | null>(null);
   const { update } = library;
   const { settings } = useSettings();
   const takes = useTakes().forPiece(id);
@@ -31,11 +35,14 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  const currentKey = useMemo(() => (piece ? xmlKey(piece.xml) : ''), [piece?.xml]); // eslint-disable-line react-hooks/exhaustive-deps
+  const meta = piece?.meta && piece.meta.forXml === currentKey ? piece.meta : null;
+
   if (!piece) {
     return (
       <Screen layout={layout}>
         <View style={{ padding: g, gap: 16 }}>
-          <BackLink label="Library" onPress={() => router.replace('/')} />
+          <BackLink label="Library" onPress={() => go({ kind: 'library' })} />
           <Display size={36}>This piece isn&rsquo;t in your library</Display>
         </View>
       </Screen>
@@ -43,14 +50,13 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
   }
 
   const onEngine = (event: EngineEvent) => {
-    if (event.type === 'loaded') setMeta(event.meta);
+    if (event.type === 'loaded') update(piece.id, { meta: { timeSignature: event.meta.timeSignature, tempoBpm: event.meta.tempoBpm, forXml: currentKey } });
   };
 
   const sourceWord = piece.source === 'photo' ? 'from a photo' : piece.source === 'file' ? 'from a file' : 'starter piece';
   const details = [`${piece.measureCount} bars`, sourceWord, takes.length ? `${takes.length} take${takes.length === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
   const eyebrow = [piece.composer || null, meta?.timeSignature ?? null, meta?.tempoBpm ? `♩ = ${meta.tempoBpm}` : null].filter(Boolean).join(' · ');
   const issues = piece.measureIssues;
-  const params = { id: piece.id };
 
   // Oldest to newest whole-piece scores, for the trend.
   const wholeScores = takes
@@ -81,7 +87,7 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
   const titleBlock = (
     <View style={{ gap: 8 }}>
       {eyebrow ? <Eyebrow tone="bright">{eyebrow}</Eyebrow> : null}
-      <Display size={tablet ? 84 : piece.title.length > 14 ? 46 : 60} numberOfLines={2} style={{ textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 20 }}>{piece.title}</Display>
+      <Display size={fitTitleSize(piece.title, tablet && !upright ? window.width * 0.56 - 2 * g : window.width - 2 * g, tablet ? 84 : 60)} numberOfLines={2} style={{ textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 20 }}>{piece.title}</Display>
       <Text style={styles.details}>{details}</Text>
     </View>
   );
@@ -134,21 +140,21 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
 
   const actions = (
     <View>
-      <GoldButton label="Practise" href={{ pathname: '/practice', params }} style={{ minHeight: 52 }} />
-      <Link href={{ pathname: '/score/[id]', params }} asChild>
+      <GoldButton label="Practise" href={hrefFor({ kind: 'piece', id, screen: 'practice' })} style={{ minHeight: 52 }} />
+      <Link href={hrefFor({ kind: 'piece', id, screen: 'score' })} asChild>
         <Tappable accessibilityRole="link" style={StyleSheet.flatten([styles.actionRow, { marginTop: 8 }])}>
           <Text style={styles.actionText}>View the music</Text>
           <Arrow />
         </Tappable>
       </Link>
-      <Link href={{ pathname: '/choose-bars', params }} asChild>
+      <Link href={hrefFor({ kind: 'piece', id, screen: 'choose-bars' })} asChild>
         <Tappable accessibilityRole="link" style={styles.actionRow}>
           <Text style={styles.actionText}>Loop a passage</Text>
           <Arrow />
         </Tappable>
       </Link>
       {issues.length ? (
-        <Link href={{ pathname: '/fix-bar', params }} asChild>
+        <Link href={hrefFor({ kind: 'piece', id, screen: 'fix-bar' })} asChild>
           <Tappable accessibilityRole="link" style={styles.actionRow}>
             <Text style={styles.actionText}>
               Check misread bars <Text style={styles.issueCount}>· {issues.length} to check</Text>
@@ -171,7 +177,7 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
           const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toLowerCase();
           const what = t.region ? `loop, bars ${t.region.fromBar}–${t.region.toBar}` : 'whole piece';
           return (
-            <Tappable key={t.id} accessibilityRole="link" onPress={() => router.push({ pathname: '/review', params: { takeId: t.id } })} style={styles.takeRow}>
+            <Tappable key={t.id} accessibilityRole="link" onPress={() => goChild({ kind: 'piece', id, screen: 'review', params: { takeId: t.id } })} style={styles.takeRow}>
               <Text style={styles.takeText}>{`${day}, ${time} · ${what}`}</Text>
               <Text style={styles.takeScore}>{v === null ? '—' : `${v}%`}</Text>
             </Tappable>
@@ -181,8 +187,36 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
     </View>
   ) : null;
 
-  // Read the score once for its time signature and tempo (not drawn).
-  const reader = <ScoreView xml={piece.xml} theme={theme} render={false} onEvent={onEngine} style={styles.hidden} />;
+  // Read the score for its time signature and tempo (not drawn) -- only the first time, or after a
+  // correction changed it; after that they come from the library.
+  const reader = meta ? null : <ScoreView xml={piece.xml} theme={theme} render={false} onEvent={onEngine} style={styles.hidden} />;
+
+  // An upright iPad stacks them: the lit wood and the title across the top, progress and actions
+  // beneath.
+  if (tablet && upright) {
+    return (
+      <Screen layout={layout} edges={[]} glow={false}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 48 }}>
+          <Wood variant="hero" style={{ minHeight: Math.round(window.height * 0.42) }}>
+            <View style={{ flex: 1, paddingHorizontal: g, paddingTop: 44, paddingBottom: 40 }}>
+              <View style={styles.heroTop}>
+                <BackLink label="Library" tone="light" onPress={() => goUp({ kind: 'library' })} />
+                <NavBar current="piece" layout="tablet" onWood />
+              </View>
+              <View style={{ flex: 1, minHeight: 40 }} />
+              {titleBlock}
+            </View>
+          </Wood>
+          <View style={{ paddingHorizontal: g, paddingTop: 36, gap: 40 }}>
+            {progress}
+            {actions}
+            {recent}
+          </View>
+        </ScrollView>
+        {reader}
+      </Screen>
+    );
+  }
 
   if (tablet) {
     return (
@@ -190,16 +224,21 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
         <View style={{ flex: 1, flexDirection: 'row' }}>
           <Wood variant="side" style={{ width: '56%' }}>
             <View style={{ flex: 1, paddingHorizontal: g, paddingTop: 44, paddingBottom: 72 }}>
-              <BackLink label="Library" tone="light" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
+              <BackLink label="Library" tone="light" onPress={() => goUp({ kind: 'library' })} />
               <View style={{ flex: 1 }} />
               {titleBlock}
             </View>
           </Wood>
-          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingLeft: 48, paddingRight: g, paddingTop: 110, paddingBottom: 48, gap: 40 }}>
-            {progress}
-            {actions}
-            {recent}
-          </ScrollView>
+          <View style={{ flex: 1 }}>
+            <View style={{ paddingLeft: 48, paddingRight: g, paddingTop: 36, alignItems: 'flex-end' }}>
+              <NavBar current="piece" layout="tablet" />
+            </View>
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingLeft: 48, paddingRight: g, paddingTop: 40, paddingBottom: 48, gap: 40 }}>
+              {progress}
+              {actions}
+              {recent}
+            </ScrollView>
+          </View>
         </View>
         {reader}
       </Screen>
@@ -207,11 +246,11 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
   }
 
   return (
-    <Screen layout={layout} edges={['bottom']} glow={false}>
-      <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
+    <Screen layout={layout} edges={[]} glow={false}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 32 }}>
         <Wood variant="hero" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 340 }} />
         <View style={{ paddingLeft: g - 10, paddingTop: 52 }}>
-          <BackLink label="Library" tone="light" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
+          <BackLink label="Library" tone="light" onPress={() => goUp({ kind: 'library' })} />
         </View>
         <View style={{ paddingHorizontal: g, marginTop: 70, gap: 30 }}>
           {titleBlock}
@@ -220,15 +259,17 @@ export function PieceScreen({ layout, id }: { layout: LayoutMode; id: string }) 
           {recent}
         </View>
       </ScrollView>
+      <NavBar current="piece" layout="phone" />
       {reader}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  heroTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' },
   details: { fontFamily: fonts.sansLight, fontSize: 13, color: colors.cream },
   trendRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
-  last: { fontFamily: fonts.display, fontSize: 46, lineHeight: 48, color: colors.bright },
+  last: { fontFamily: fonts.display, fontSize: 46, lineHeight: 56, marginVertical: -4, color: colors.bright },
   lastSign: { fontFamily: fonts.serif, fontSize: 20, color: colors.cream },
   trend: { flexDirection: 'row', alignItems: 'flex-end', gap: 9, height: 44 },
   small: { fontFamily: fonts.sansLight, fontSize: 11, color: colors.soft },

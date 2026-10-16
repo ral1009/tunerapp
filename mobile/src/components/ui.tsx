@@ -2,7 +2,8 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Link, type Href } from 'expo-router';
 import { useEffect, useState, type ReactNode } from 'react';
-import { Animated, Easing, StyleSheet, Text, useWindowDimensions, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
+import { Animated, Easing, Modal, StyleSheet, useWindowDimensions, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
+import { Text } from '@/components/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useSettings } from '@/theme/settings';
@@ -83,13 +84,15 @@ export function useGutter(layout: 'phone' | 'tablet'): number {
 // ground. Each screen gets one of these, never more:
 //   hero  -- a top section that fades into the ground (Library, Piece, Review)
 //   band  -- a footer band whose top edge melts out of the ground (Practising, Fix a bar)
+//   header -- a lit header band above the music, darkening toward its lower edge (Score)
 //   full  -- the whole screen, darkest at the bottom where the copy sits (Welcome)
 //   dim   -- the whole screen, evenly dark with a lit centre (Tuner)
 //   side  -- a left column fading out to the right (iPad Library and Review)
-export type WoodVariant = 'hero' | 'band' | 'full' | 'dim' | 'side' | 'swatch';
+export type WoodVariant = 'hero' | 'band' | 'header' | 'full' | 'dim' | 'side' | 'swatch';
 
 const WASHES: Record<Exclude<WoodVariant, 'side' | 'swatch'>, { colors: [string, string, ...string[]]; locations: [number, number, ...number[]] }> = {
   hero: { colors: ['rgba(11,8,6,0.55)', 'rgba(11,8,6,0)', 'rgba(11,8,6,0.1)', colors.ebony], locations: [0, 0.22, 0.48, 1] },
+  header: { colors: ['rgba(11,8,6,0.3)', 'rgba(11,8,6,0.12)', 'rgba(11,8,6,0.62)'], locations: [0, 0.45, 1] },
   band: { colors: [colors.ebony, 'rgba(11,8,6,0.72)', 'rgba(11,8,6,0.58)', 'rgba(11,8,6,0.84)'], locations: [0, 0.3, 0.7, 1] },
   full: { colors: ['rgba(11,8,6,0.35)', 'rgba(11,8,6,0.15)', 'rgba(11,8,6,0.7)', colors.ebony], locations: [0, 0.3, 0.58, 0.85] },
   dim: { colors: ['rgba(11,8,6,0.82)', 'rgba(11,8,6,0.45)', 'rgba(11,8,6,0.55)', 'rgba(11,8,6,0.96)'], locations: [0, 0.3, 0.55, 1] },
@@ -149,12 +152,41 @@ export function Eyebrow({ children, style, tone = 'gold' }: TextProps & { tone?:
 // clips the top of a first line to it: "Twinkle" read "'I'winkle" at 1.04. 1.2 leaves them room.
 const DISPLAY_LINE = 1.2;
 
+// Bodoni's italic also leans past its own advance width, so the last letter's tail was clipped at
+// the right edge of a tight box (and a swash capital at the left): a little padding gives the
+// glyphs room, and an equal negative margin keeps the text where it was.
 export function Display({ children, size = 40, style, numberOfLines }: TextProps & { size?: number }) {
+  const lean = Math.ceil(size * 0.08);
   return (
-    <Text numberOfLines={numberOfLines} style={[{ fontFamily: fonts.display, fontSize: size, lineHeight: Math.round(size * DISPLAY_LINE), color: colors.bright }, style]}>
+    <Text
+      numberOfLines={numberOfLines}
+      style={[{ fontFamily: fonts.display, fontSize: size, lineHeight: Math.round(size * DISPLAY_LINE), color: colors.bright, paddingHorizontal: lean, marginHorizontal: -lean }, style]}
+    >
       {children}
     </Text>
   );
+}
+
+// A very large numeral or letter (the review's percentage, the tuner's note): a line box tall
+// enough that iOS doesn't clip the glyph's top, pulled back in with negative margins so it takes
+// no more room than the tight box it replaces.
+export function bigNumeral(size: number): TextStyle {
+  const line = Math.round(size * DISPLAY_LINE);
+  const tight = Math.round(size * 0.93);
+  return { fontSize: size, lineHeight: line, marginVertical: -Math.round((line - tight) / 2), paddingHorizontal: Math.ceil(size * 0.06) };
+}
+
+// The size for a big italic title that must fit `width` on at most two lines, never larger than
+// `max`: its longest word has to fit a line, and the whole title two lines. Bodoni Moda italic
+// runs up to about 0.5 of its size per letter (wide capitals, a trailing comma), and Display adds
+// a little padding for its lean. Titles from photos can be long, so a fixed size either
+// wasted space or cut them off ("D maj...") on a narrower screen.
+export function fitTitleSize(title: string, width: number, max: number): number {
+  const longestWord = Math.max(1, ...title.split(/\s+/).map((w) => w.length));
+  const room = width * 0.95;
+  const byWord = room / (longestWord * 0.5);
+  const byLines = (2 * room) / (Math.max(1, title.length) * 0.5);
+  return Math.max(28, Math.floor(Math.min(max, byWord, byLines)));
 }
 
 // Roman Bodoni for item titles.
@@ -180,11 +212,18 @@ export function Rule({ style, soft }: { style?: StyleProp<ViewStyle>; soft?: boo
   return <View style={[{ height: 1, backgroundColor: soft ? colors.ruleSoft : colors.rule }, style]} />;
 }
 
-// A thin progress line: a hairline with a gold run along it.
+// A thin progress line: a hairline with a gold run along it. The run glides to each new value
+// (on the native driver, so it stays smooth while the JavaScript thread is busy) instead of
+// jumping.
 export function Progress({ value, style }: { value: number; style?: StyleProp<ViewStyle> }) {
+  const target = Math.max(0, Math.min(1, value));
+  const [run] = useState(() => new Animated.Value(target));
+  useEffect(() => {
+    Animated.timing(run, { toValue: target, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [target, run]);
   return (
     <View style={[styles.progressTrack, style]}>
-      <View style={[styles.progressRun, { width: `${Math.max(0, Math.min(1, value)) * 100}%` }]} />
+      <Animated.View style={[styles.progressRun, { width: '100%', transformOrigin: 'left', transform: [{ scaleX: run }] }]} />
     </View>
   );
 }
@@ -220,7 +259,7 @@ export function BackLink({ label, onPress, href, tone = 'gold' }: { label: strin
   const inner = (
     <Tappable onPress={onPress} accessibilityRole="link" accessibilityLabel={`Back to ${label}`} hitSlop={8} style={styles.back}>
       <View style={[styles.chevron, { borderColor: color }]} />
-      <Text style={[styles.backText, { color }]}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.backText, { color }]}>{label}</Text>
     </Tappable>
   );
   return href ? <Link href={href} asChild>{inner}</Link> : inner;
@@ -342,6 +381,39 @@ export function PageThumb({ caps, style }: { caps: string; style?: StyleProp<Vie
   );
 }
 
+// A question that needs an answer before going on ("Stop this take?"): a dark sheet over the
+// screen with a gold rule, a line of explanation and up to three answers, the first in gold.
+// Tapping outside it, or Android's back button, picks `onDismiss` (the safe answer).
+export function ConfirmSheet({ visible, title, message, actions, onDismiss }: {
+  visible: boolean;
+  title: string;
+  message?: string;
+  actions: { label: string; onPress: () => void }[];
+  onDismiss: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss} supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right', 'portrait-upside-down']} statusBarTranslucent>
+      <View style={styles.sheetScrim}>
+        <Tappable accessibilityRole="button" accessibilityLabel="Cancel" onPress={onDismiss} style={StyleSheet.absoluteFill} />
+        <View style={styles.sheet} accessibilityViewIsModal>
+          <View style={styles.sheetRule} />
+          <Display size={30}>{title}</Display>
+          {message ? <Body style={{ marginTop: 8 }}>{message}</Body> : null}
+          <View style={styles.sheetActions}>
+            {actions.map((action, i) =>
+              i === 0 ? (
+                <GoldButton key={action.label} label={action.label} onPress={action.onPress} />
+              ) : (
+                <TextButton key={action.label} label={action.label} tone={i === actions.length - 1 ? 'muted' : 'cream'} onPress={action.onPress} />
+              ),
+            )}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 // The ivory sheet the score sits on.
 export const paperSheet: ViewStyle = {
   backgroundColor: colors.paper,
@@ -353,6 +425,10 @@ export const paperSheet: ViewStyle = {
 };
 
 const styles = StyleSheet.create({
+  sheetScrim: { flex: 1, backgroundColor: 'rgba(5,3,2,0.72)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  sheet: { width: '100%', maxWidth: 460, backgroundColor: colors.ebony, borderWidth: 1, borderColor: colors.rule, paddingHorizontal: 28, paddingTop: 30, paddingBottom: 22 },
+  sheetRule: { position: 'absolute', left: 0, right: 0, top: 0, height: 1, backgroundColor: colors.gold },
+  sheetActions: { marginTop: 26, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 24, rowGap: 8 },
   ground: { flex: 1, backgroundColor: colors.ebony },
   flex: { flex: 1 },
   phoneColumn: { width: '100%', maxWidth: 520, alignSelf: 'center' },
@@ -365,9 +441,9 @@ const styles = StyleSheet.create({
   goldButtonText: { fontFamily: fonts.sansMedium, fontSize: 11, letterSpacing: 3.5, textTransform: 'uppercase', color: colors.champagne },
   textButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 10 },
   textButtonText: { fontFamily: fonts.sansMedium, fontSize: 11, letterSpacing: 3.5, textTransform: 'uppercase' },
-  back: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 10, alignSelf: 'flex-start' },
+  back: { minHeight: 44, maxWidth: '100%', flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 10, alignSelf: 'flex-start' },
   chevron: { width: 8, height: 8, borderLeftWidth: 1.2, borderBottomWidth: 1.2, transform: [{ rotate: '45deg' }], marginLeft: 3 },
-  backText: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 4, textTransform: 'uppercase' },
+  backText: { flexShrink: 1, fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 4, textTransform: 'uppercase' },
   choiceRow: { flexDirection: 'row', flexWrap: 'wrap' },
   choice: { minHeight: 44, justifyContent: 'center', borderBottomWidth: 1 },
   choiceText: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 2.5, textTransform: 'uppercase' },

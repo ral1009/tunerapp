@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Animated, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Animated, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { useServerStatus, type ServerStatus as Status } from '@/config/useServerStatus';
 import { colors, fonts } from '@/theme/tokens';

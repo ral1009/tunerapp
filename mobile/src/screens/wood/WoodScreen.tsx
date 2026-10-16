@@ -1,6 +1,7 @@
 import { Image } from 'expo-image';
-import { router } from 'expo-router';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { goUp } from '@/navigation/go';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { BackLink, Display, Eyebrow, Purfling, Screen, useGutter, Wood } from '@/components/ui';
 import { useLibrary } from '@/data/libraryStore';
@@ -22,7 +23,7 @@ export function WoodScreen({ layout }: { layout: LayoutMode }) {
     <Screen layout={layout}>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         <View style={{ paddingLeft: g - 10, paddingTop: 6 }}>
-          <BackLink label="Settings" onPress={() => (router.canGoBack() ? router.back() : router.replace('/settings'))} />
+          <BackLink label="Settings" onPress={() => goUp({ kind: 'settings' })} />
         </View>
         <View style={{ paddingHorizontal: g, paddingTop: 18, gap: 8, maxWidth: 640 }}>
           <Display size={tablet ? 64 : 44}>Wood</Display>

@@ -1,5 +1,5 @@
-import { router } from 'expo-router';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import { IN_TUNE_CENTS, nearestNote } from '@/audio/notes';
 import { useTuner, useTunerLive, type TunerState } from '@/audio/useTuner';
@@ -7,6 +7,7 @@ import { BackLink, Display, Eyebrow, GoldButton, Screen, TextButton, useGutter, 
 import { useSettings, type LayoutMode } from '@/theme/settings';
 import { colors, fonts } from '@/theme/tokens';
 import { useStayAwake } from '@/components/useStayAwake';
+import { go, goUp } from '@/navigation/go';
 
 // A quiet room reads well under this raw RMS on every mic we've measured (the web app's calibration
 // floor on the user's laptop sat near 0.0003); above it, noise starts to reach the pitch gate.
@@ -33,7 +34,7 @@ export function MicCheckScreen({ layout }: { layout: LayoutMode }) {
       <ScrollView contentContainerStyle={{ flexGrow: 1, paddingBottom: 28 }}>
         <Wood variant="hero" style={{ position: 'absolute', left: 0, right: 0, top: 0, height: tablet ? 460 : 380 }} />
         <View style={{ paddingLeft: g - 10, paddingTop: 52 }}>
-          <BackLink label="Back" tone="light" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
+          <BackLink label="Back" tone="light" onPress={() => goUp({ kind: 'settings' })} />
         </View>
         <View style={{ paddingHorizontal: g, marginTop: tablet ? 90 : 64, gap: 10, maxWidth: 640 }}>
           <Eyebrow tone="bright">Microphone</Eyebrow>
@@ -111,8 +112,8 @@ function MicLive({ tuner, a4, g, tablet }: { tuner: TunerState; a4: number; g: n
         </View>
 
         <View style={[styles.actions, { paddingHorizontal: g }, tablet && { justifyContent: 'flex-end', gap: 36 }]}>
-          <TextButton label="Skip" href="/add-music" />
-          <GoldButton label={heard.length ? 'Sounds good' : 'Skip for now'} href="/add-music" />
+          <TextButton label="Skip" onPress={() => go({ kind: 'add-music' })} />
+          <GoldButton label={heard.length ? 'Sounds good' : 'Skip for now'} onPress={() => go({ kind: 'add-music' })} />
         </View>
     </>
   );

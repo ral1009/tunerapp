@@ -17,6 +17,18 @@ export interface Piece {
   openedAt: number | null;
   measureCount: number;
   measureIssues: ScoreMeasureIssue[]; // bars that don't add up -- usually photo misreads
+  // Time signature and tempo as the score engine read them, remembered so the piece page doesn't
+  // start a score engine just to show them. `forXml` is xmlKey(xml) at the time: a correction
+  // that rewrites the XML makes it stale, and it's read again.
+  meta?: { timeSignature: string; tempoBpm: number | null; forXml: string };
+}
+
+// A cheap fingerprint of a score's XML (length and a 32-bit hash), to tell whether `meta` still
+// belongs to it.
+export function xmlKey(xml: string): string {
+  let hash = 5381;
+  for (let i = 0; i < xml.length; i++) hash = ((hash << 5) + hash + xml.charCodeAt(i)) | 0;
+  return `${xml.length}:${hash >>> 0}`;
 }
 
 const STORAGE_KEY = 'tunerapp.library.v1';

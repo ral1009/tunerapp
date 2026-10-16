@@ -1,8 +1,11 @@
 import { File as DeviceFile } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { router } from 'expo-router';
+
+import { go } from '@/navigation/go';
 import { useEffect, useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
+import { Text } from '@/components/Text';
 
 import type { EngineEvent } from '@core/score/engine/protocol';
 
@@ -202,7 +205,7 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
     });
     setPhase('done');
     // Straight to the music.
-    router.replace({ pathname: '/score/[id]', params: { id } });
+    go({ kind: 'piece', id, screen: 'score' });
   };
 
   // Pages as the server counts them (a PDF can hold several); until it answers, one per file.
@@ -264,7 +267,7 @@ export function ReadingScreen({ layout }: { layout: LayoutMode }) {
             <Body>{error}</Body>
             <View style={{ flexDirection: 'row', gap: 28, alignItems: 'center' }}>
               <TextButton label="Back" onPress={() => router.back()} />
-              <GoldButton label="Start again" onPress={() => router.replace(isMusicXml ? '/add-music' : '/new-score')} />
+              <GoldButton label="Start again" onPress={() => go(isMusicXml ? { kind: 'add-music' } : { kind: 'add-music', screen: 'new-score' })} />
             </View>
           </>
         ) : (
