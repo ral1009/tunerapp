@@ -36,9 +36,10 @@ export function TunerScreen({ layout }: { layout: LayoutMode }) {
 function TunerLive({ tuner, a4, tablet }: { tuner: TunerState; a4: number; tablet: boolean }) {
   const window = useWindowDimensions();
   // The note letter is the screen's centrepiece, but it shrinks to fit a short (sideways) screen.
-  // A phone on its side puts the letter beside its readout instead of above it.
+  // Always stacked: the letter, then its readout and the scale beneath. A phone on its side gets a
+  // smaller letter and tighter spacing so the stack still fits (the screen scrolls if it doesn't).
   const wide = !tablet && window.width > window.height;
-  const letterSize = Math.round(Math.min(tablet ? 260 : 220, window.height * (wide ? 0.42 : 0.3), window.width * (wide ? 0.25 : 0.55)));
+  const letterSize = Math.round(Math.min(tablet ? 260 : 220, window.height * (wide ? 0.22 : 0.3), window.width * 0.55));
   const { micStatus, micError, restart } = tuner;
   const snap = useTunerLive(tuner.live);
   const { reading, heldHz, strings, currentString: current } = snap;
@@ -86,17 +87,16 @@ function TunerLive({ tuner, a4, tablet }: { tuner: TunerState; a4: number; table
 
   return (
     <>
-      <View style={[styles.centre, wide && styles.centreWide]}>
-        {wide ? null : <Text style={styles.stringLabel}>{stringLabel}</Text>}
+      <View style={styles.centre}>
+        <Text style={styles.stringLabel}>{stringLabel}</Text>
         <Text style={[{ fontFamily: fonts.display, color: colors.bright, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 40 }, bigNumeral(letterSize)]}>{letter}</Text>
-        <View style={wide ? { flex: 1, alignItems: 'center' } : styles.readout}>
-          {wide ? <Text style={styles.stringLabel}>{stringLabel}</Text> : null}
+        <View style={styles.readout}>
           <Text style={styles.hz}>{hzLine}</Text>
           <Text style={[styles.cents, wide && { marginTop: 8 }]}>
             {shownCents === null ? ' ' : `${shownCents > 0 ? '+' : shownCents < 0 ? '−' : ''}${Math.abs(Math.round(shownCents))}¢`}
             <Text style={styles.advice}>{shownCents === null ? status : `  ${status}`}</Text>
           </Text>
-          <View style={{ width: tablet ? 520 : '100%', marginTop: wide ? 12 : 22 }}>
+          <View style={{ width: tablet ? 520 : '100%', marginTop: wide ? 10 : 22 }}>
             <IntonationScale cents={shownCents} />
           </View>
           {micStatus === 'denied' && Platform.OS !== 'web' ? <TextButton label="Open settings" tone="gold" onPress={() => Linking.openSettings()} /> : null}
@@ -123,7 +123,6 @@ const styles = StyleSheet.create({
   eyebrow: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 4.5, textTransform: 'uppercase', color: '#E9D5AE' },
   ref: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 3, textTransform: 'uppercase', color: colors.soft },
   centre: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12 },
-  centreWide: { flexDirection: 'row', gap: 32, paddingHorizontal: 12 },
   readout: { alignSelf: 'stretch', alignItems: 'center' },
   stringLabel: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 4, textTransform: 'uppercase', color: colors.goldBright },
   hz: { fontFamily: fonts.sansLight, fontSize: 13, color: colors.cream },
