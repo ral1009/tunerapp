@@ -23,13 +23,18 @@ export class ArztFollower {
   // (nRef + 1) x 2, column-major pairs: [i*2] = previous input, [i*2 + 1] = current input
   private readonly cost: Float32Array;
   private pendingSeek: number | null = null;
+  private readonly stepSize: number;
+  private readonly local: Float32Array; // per-step distances, reused (sized for the widest window)
 
-  constructor(reference: Float32Array, frameRate: number) {
+  // stepSize: the most reference frames it may move per played frame (matchmaker: 3).
+  constructor(reference: Float32Array, frameRate: number, stepSize = ARZT_STEP_SIZE) {
+    this.stepSize = stepSize;
     this.reference = reference;
     this.nRef = reference.length / 12;
     this.windowSize = Math.round(ARZT_WINDOW_SECONDS * frameRate);
     this.startWindowSize = Math.round(ARZT_START_WINDOW_SECONDS * frameRate);
     this.cost = new Float32Array((this.nRef + 1) * 2).fill(Infinity);
+    this.local = new Float32Array(Math.min(this.nRef, 2 * Math.max(this.windowSize, this.startWindowSize) + 1));
   }
 
   // Applied before the next frame, like the server (the seek arrives between frames).
@@ -58,8 +63,8 @@ export class ArztFollower {
     const input = this.inputIndex;
 
     let minCosts = Infinity;
-    let minIndex = Math.max(this.currentFrame - ARZT_STEP_SIZE, 0);
-    const local = new Float32Array(windowEnd - windowStart);
+    let minIndex = Math.max(this.currentFrame - this.stepSize, 0);
+    const local = this.local;
     for (let s = windowStart; s < windowEnd; s += 1) {
       let d = 0;
       const row = s * 12;
@@ -68,7 +73,7 @@ export class ArztFollower {
     }
     if (windowStart === 0 && input === 0) {
       let sum = 0;
-      for (let i = 0; i < local.length; i += 1) sum = fround(sum + local[i]);
+      for (let i = 0; i < windowEnd - windowStart; i += 1) sum = fround(sum + local[i]);
       cost[1 * 2 + 1] = sum;
       minCosts = cost[1 * 2 + 1];
       minIndex = 0;
@@ -92,7 +97,7 @@ export class ArztFollower {
       cost[i] = cost[i + 1];
       cost[i + 1] = Infinity;
     }
-    this.currentFrame = input > 0 ? Math.min(Math.max(minIndex, this.currentFrame), this.currentFrame + ARZT_STEP_SIZE) : minIndex;
+    this.currentFrame = input > 0 ? Math.min(Math.max(minIndex, this.currentFrame), this.currentFrame + this.stepSize) : minIndex;
     this.inputIndex += 1;
     return true;
   }

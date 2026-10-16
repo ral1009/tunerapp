@@ -12,10 +12,10 @@
 // need their spectrum recomputed.
 import type { ScoreNotes } from "../../score/scoreNotes";
 import { ArztFollower } from "./arztFollower";
-import { chromaFilterBank, chromaFrames, chromaFromPower, estimateTuning, piptrackFrame, powerSpectrum } from "./chroma";
+import { chromaFilterBank, chromaFrames, chromaFromPower, estimateTuning, lastSpectrumBandStats, piptrackFrame, powerSpectrum } from "./chroma";
 import { alignFromFeatures, type AlignmentPathPoint, type TakeSeek } from "./offlineAlign";
 import { PlaceFinder } from "./placeFinder";
-import { bandStats, bandStatsFromPower, PlayingGate } from "./playingGate";
+import { bandStatsFromPower, PlayingGate } from "./playingGate";
 import { referenceAudio, refFrameQuarters } from "./referenceAudio";
 
 // The server's FRAME_RATE: hop = round(sampleRate / 30).
@@ -54,9 +54,19 @@ export function buildReference(score: ScoreNotes, sampleRate: number): Alignment
 }
 
 export interface DeviceAlignerOptions {
-  // Re-find the place when the live follower has lost it (see Recovery below). Default on.
+  // Re-find the place when the live follower has lost it (placeFinder.ts), and end the piece only
+  // once the player stops after the last note. Default on; off is the server's behaviour.
   recovery?: boolean;
+  // The most reference frames the live follower may move per played frame. The server uses 3
+  // (3x the score's tempo); the device defaults to 2: on the stress takes (npm run
+  // alignStressTest) the cursor raced ahead on repeated notes less -- p90 error 0.70 -> 0.53 s on
+  // clean takes, 0.89 -> 0.79 s played at 70% -- at the cost of catching up more slowly, which
+  // the place finder covers. A player can then be up to 2x the score's tempo.
+  stepSize?: number;
 }
+
+// Exactly what the server computes (the parity harness checks this).
+export const SERVER_BEHAVIOUR: DeviceAlignerOptions = { recovery: false, stepSize: 3 };
 
 export class DeviceAligner {
   readonly reference: AlignmentReference;
@@ -96,7 +106,7 @@ export class DeviceAligner {
     this.sampleRate = reference.sampleRate;
     this.hop = reference.hop;
     this.nFft = reference.nFft;
-    this.follower = new ArztFollower(reference.chroma, this.sampleRate / this.hop);
+    this.follower = new ArztFollower(reference.chroma, this.sampleRate / this.hop, options.stepSize ?? 2);
     this.frame = new Float32Array(this.nFft);
     this.S = new Float32Array((this.nFft >> 1) + 1);
     this.placeFinder = options.recovery === false ? null : new PlaceFinder(reference.chroma, this.sampleRate / this.hop);
@@ -177,6 +187,7 @@ export class DeviceAligner {
 
     // Chroma of this frame, tuning from this frame alone (the server's per-call processor).
     const S = powerSpectrum(frame, 0, this.nFft, this.S);
+    const live = lastSpectrumBandStats(this.nFft, this.sampleRate);
     const start = this.peakPitches.length;
     piptrackFrame(S, this.sampleRate, this.nFft, this.peakPitches, this.peakMags);
     const tuning = estimateTuning(this.peakPitches.slice(start), this.peakMags.slice(start));
@@ -190,7 +201,7 @@ export class DeviceAligner {
     this.offlineRms.push(offline.rms);
 
     // Live gate (its own window rounding, as the server's stream computes it), then the follower.
-    const { low, rms } = bandStats(frame, 0, this.nFft, this.sampleRate);
+    const { low, rms } = live;
     let moved: number | null = null;
     for (const released of this.gate.push(index, chroma, 0, low, rms)) {
       if (this.completed) break;

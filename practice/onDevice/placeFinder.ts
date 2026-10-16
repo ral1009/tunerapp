@@ -15,8 +15,11 @@
 // follower is, is clearly better than anything near the follower, isn't one of several equally
 // good places (repeated passages), and the next check agrees, the follower should move there.
 //
-// Distances are the follower's own L1 between chroma vectors; a row of distances to every
-// reference frame is computed once per played frame and kept for the length of the window.
+// Distances are the follower's own L1 between chroma vectors, at half the frame rate: pairs of
+// played frames and pairs of reference frames are averaged (4x less matching work; the follower
+// places itself to the frame after a move). A row of distances to every reference pair is
+// computed once per pair played and kept for the length of the window.
+const DECIMATE = 2;
 
 // The window matched: a short one, and a long one for when the short one fits several places
 // (Twinkle's lines 2 and 3 are the same notes; its line 4 is line 1 -- only a window reaching
@@ -79,12 +82,25 @@ export class PlaceFinder {
   private onTrack: number[] = []; // the follower's own distance, per played frame (recent)
   private readonly minMatch: number;
 
+  private readonly fullReference: Float32Array;
+  private readonly pair = new Float32Array(12);
+  private pairCount = 0;
+  private pairFirstFrame = 0;
+
   constructor(reference: Float32Array, frameRate: number) {
-    this.reference = reference;
-    this.nRef = reference.length / 12;
-    this.shortWindow = Math.round(PLACE_WINDOW_SECONDS * frameRate);
-    this.longWindow = Math.round(PLACE_LONG_WINDOW_SECONDS * frameRate);
-    this.away = Math.round(PLACE_AWAY_SECONDS * frameRate);
+    this.fullReference = reference;
+    const nFull = reference.length / 12;
+    this.nRef = Math.ceil(nFull / DECIMATE);
+    this.reference = new Float32Array(this.nRef * 12);
+    for (let j = 0; j < nFull; j += 1) for (let c = 0; c < 12; c += 1) this.reference[Math.floor(j / DECIMATE) * 12 + c] += reference[j * 12 + c];
+    for (let j = 0; j < this.nRef; j += 1) {
+      const count = Math.min(DECIMATE, nFull - j * DECIMATE);
+      for (let c = 0; c < 12; c += 1) this.reference[j * 12 + c] /= count;
+    }
+    const rate = frameRate / DECIMATE;
+    this.shortWindow = Math.round(PLACE_WINDOW_SECONDS * rate);
+    this.longWindow = Math.round(PLACE_LONG_WINDOW_SECONDS * rate);
+    this.away = Math.round(PLACE_AWAY_SECONDS * rate);
     this.rows = new Float32Array(this.longWindow * this.nRef);
     this.takeFrames = new Int32Array(this.longWindow);
     this.costA = new Float32Array(this.nRef);
@@ -93,7 +109,7 @@ export class PlaceFinder {
     this.startB = new Int32Array(this.nRef);
     this.rowA = new Int32Array(this.nRef);
     this.rowB = new Int32Array(this.nRef);
-    this.minMatch = Math.round(PLACE_MIN_MATCH_SECONDS * frameRate);
+    this.minMatch = Math.round(PLACE_MIN_MATCH_SECONDS * rate);
   }
 
   // Forget the window (after a jump: what came before is another place).
@@ -102,24 +118,44 @@ export class PlaceFinder {
     this.head = 0;
     this.sinceCheck = 0;
     this.agreed = [];
+    this.pairCount = 0;
   }
 
   // One played frame (the chroma the follower just used).
   push(chroma: ArrayLike<number>, offset: number, takeFrame: number, followerFrame: number): void {
+    // The follower's own distance for this frame, in a ±1 frame tolerance.
+    const full = this.fullReference;
+    const nFull = full.length / 12;
+    let own = Infinity;
+    for (let j = Math.max(0, followerFrame - 1); j <= Math.min(nFull - 1, followerFrame + 1); j += 1) {
+      let d = 0;
+      for (let c = 0; c < 12; c += 1) d += Math.abs(full[j * 12 + c] - chroma[offset + c]);
+      own = Math.min(own, d);
+    }
+    this.onTrack.push(own);
+    if (this.onTrack.length > ON_TRACK_HISTORY) this.onTrack.shift();
+
+    // Pairs of played frames, averaged.
+    if (this.pairCount === 0) {
+      this.pairFirstFrame = takeFrame;
+      for (let c = 0; c < 12; c += 1) this.pair[c] = chroma[offset + c];
+    } else {
+      for (let c = 0; c < 12; c += 1) this.pair[c] += chroma[offset + c];
+    }
+    this.pairCount += 1;
+    if (this.pairCount < DECIMATE) return;
+    this.pairCount = 0;
+    for (let c = 0; c < 12; c += 1) this.pair[c] /= DECIMATE;
+
     const row = this.head * this.nRef;
     const ref = this.reference;
     for (let j = 0; j < this.nRef; j += 1) {
       const r = j * 12;
       let d = 0;
-      for (let c = 0; c < 12; c += 1) d += Math.abs(ref[r + c] - chroma[offset + c]);
+      for (let c = 0; c < 12; c += 1) d += Math.abs(ref[r + c] - this.pair[c]);
       this.rows[row + j] = d;
     }
-    // The follower's own distance for this frame, in a ±1 frame tolerance.
-    let own = Infinity;
-    for (let j = Math.max(0, followerFrame - 1); j <= Math.min(this.nRef - 1, followerFrame + 1); j += 1) own = Math.min(own, this.rows[row + j]);
-    this.onTrack.push(own);
-    if (this.onTrack.length > ON_TRACK_HISTORY) this.onTrack.shift();
-    this.takeFrames[this.head] = takeFrame;
+    this.takeFrames[this.head] = this.pairFirstFrame;
     this.head = (this.head + 1) % this.longWindow;
     if (this.count < this.longWindow) this.count += 1;
     this.sinceCheck += 1;
@@ -197,9 +233,10 @@ export class PlaceFinder {
   }
 
   // Where the follower should be, if it's lost; null if it's fine (or it can't be told yet).
-  check(current: number): PlaceFound | null {
-    if (this.count < this.shortWindow || this.sinceCheck < PLACE_CHECK_EVERY_FRAMES) return null;
+  check(currentFrame: number): PlaceFound | null {
+    if (this.count < this.shortWindow || this.sinceCheck < PLACE_CHECK_EVERY_FRAMES / DECIMATE) return null;
     this.sinceCheck = 0;
+    const current = Math.floor(currentFrame / DECIMATE);
     let verdict = this.judge(this.shortWindow, current);
     if ((verdict.kind === "ambiguous" || verdict.kind === "weak") && this.count >= this.longWindow) verdict = this.judge(this.longWindow, current);
     if (verdict.kind !== "lost") {
@@ -209,11 +246,17 @@ export class PlaceFinder {
     const found = verdict.found;
     // Agrees with the last check: the same place, moved on by at most what was played since.
     const last = this.agreed[this.agreed.length - 1];
-    if (last && !(found.target >= last.target - 3 && found.target <= last.target + 2 * PLACE_CHECK_EVERY_FRAMES + 3)) this.agreed = [];
+    if (last && !(found.target >= last.target - 2 && found.target <= last.target + PLACE_CHECK_EVERY_FRAMES + 2)) this.agreed = [];
     this.agreed.push(found);
     if (this.agreed.length < PLACE_CONFIRMATIONS) return null;
-    // The stretch began where the first agreeing check saw it begin.
-    const result = { ...found, startTakeFrame: this.agreed[0].startTakeFrame, startRefFrame: this.agreed[0].startRefFrame };
+    // The stretch began where the first agreeing check saw it begin. Back to full frames: the
+    // end of the matched pair, the start of the first.
+    const nFull = this.fullReference.length / 12;
+    const result = {
+      target: Math.min(nFull - 1, found.target * DECIMATE + DECIMATE - 1),
+      startTakeFrame: this.agreed[0].startTakeFrame,
+      startRefFrame: Math.min(nFull - 1, this.agreed[0].startRefFrame * DECIMATE),
+    };
     this.agreed = [];
     return result;
   }

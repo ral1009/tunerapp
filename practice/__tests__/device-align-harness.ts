@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { ArztFollower } from "../onDevice/arztFollower";
 import { chromaFrames, chromaOfFrame } from "../onDevice/chroma";
 import { alignTake, type TakeSeek } from "../onDevice/offlineAlign";
-import { buildReference, DeviceAligner } from "../onDevice/deviceAligner";
+import { buildReference, DeviceAligner, SERVER_BEHAVIOUR } from "../onDevice/deviceAligner";
 import { bandStats, PlayingGate } from "../onDevice/playingGate";
 import type { CursorNoteInfo, QuarterIndexEntry } from "../../score/renderer/scoreCursor";
 import { DEFAULT_MATCHMAKER_FOLLOWER_CONFIG } from "../matchmakerFollower";
@@ -304,7 +304,7 @@ for (const name of cases) {
   const reference = buildReference(parsed, meta.sampleRate);
   const prepMs = performance.now() - t0;
   // The server's behaviour exactly: no place finding, the piece ends at the last onset.
-  const aligner = new DeviceAligner(reference, { recovery: false });
+  const aligner = new DeviceAligner(reference, SERVER_BEHAVIOUR);
   const positions: number[] = [];
   let pushed = 0;
   const pieceSize = 1000;
@@ -329,9 +329,10 @@ for (const name of cases) {
   const serverLast = meta.refFrameQuarter[Math.min(meta.followerFrames[meta.followerFrames.length - 1] ?? 0, meta.refFrameQuarter.length - 1)];
   check("session live end = server", Math.abs(lastLive - serverLast) < 1e-9, `${lastLive.toFixed(3)} vs ${serverLast?.toFixed(3)}`);
 
-  // The app's default adds the place finder (placeFinder.ts) and ends the piece only once the
-  // player stops. On a take with nothing for it to fix it must never move the follower: the same
-  // live positions as the server's, as far as those go.
+  // The app's default adds the place finder (placeFinder.ts), a smaller follower step, and ends
+  // the piece only once the player stops. On a take with nothing for it to fix the place finder
+  // must never move the follower. (Positions differ from the server's by the step size; the
+  // stress harness judges those against the take's alignment.)
   const withRecovery = new DeviceAligner(reference);
   const recoveredPositions: number[] = [];
   pushed = 0;
@@ -345,12 +346,11 @@ for (const name of cases) {
     }
     for (const seek of meta.seeks) if (seek.chunk === chunk) withRecovery.seek(seek.quarter);
   }
-  const prefixSame = positions.every((q, i) => recoveredPositions[i] === q);
   // Only where the server's live follower is known to be right all the way: not after a jump the
   // player didn't follow (the jump case keeps playing on from where it was, so moving it back is
   // the right thing), and not on the held-out takes (judged by npm run alignStressTest -- --all).
   const detail = `${withRecovery.recoveries} moves, ${recoveredPositions.length} positions vs ${positions.length}`;
-  if (meta.seeks.length === 0 && !["bwv1006-menuet1", "user-take-b"].includes(meta.name)) check("default session: no place-finder moves, same positions", withRecovery.recoveries === 0 && prefixSame, detail);
+  if (meta.seeks.length === 0 && !["bwv1006-menuet1", "user-take-b"].includes(meta.name)) check("default session: no place-finder moves", withRecovery.recoveries === 0, detail);
   else console.log(`       default session (not checked here): ${detail}`);
 
   // Stage 5: what the player sees -- every note graded from our path vs from the server's.

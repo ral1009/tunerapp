@@ -55,6 +55,27 @@ export function powerSpectrum(samples: Float32Array, offset: number, n: number, 
   return S;
 }
 
+// The live gate's band stats (playingGate.ts bandStats: energy at 60-180 Hz over 180-4000 Hz,
+// and rms) from the spectrum powerSpectrum() just computed -- its unrounded float64 bins -- so a
+// live frame needs one FFT, not two. bandStats windows in float32 like the server's stream; this
+// windows in float64: a ~1e-8 relative difference, and the parity harness checks the gate's
+// decisions still match the server's frame for frame.
+export function lastSpectrumBandStats(n: number, sampleRate: number): { low: number; rms: number } {
+  const { re, im } = dftScratch(n);
+  const bins = (n >> 1) + 1;
+  let low = 0;
+  let band = 0;
+  let total = 0;
+  for (let k = 0; k < bins; k += 1) {
+    const p = re[k] * re[k] + im[k] * im[k];
+    const f = (k * sampleRate) / n;
+    if (f > 60 && f < 180) low += p;
+    if (f >= 180 && f < 4000) band += p;
+    total += p;
+  }
+  return { low: low / (band + 1e-12), rms: Math.sqrt(total / n) };
+}
+
 // librosa.piptrack on a power spectrum column: (pitch, magnitude) of each thresholded local
 // maximum between 150 Hz and min(4000, sr/2). Appends to pitches/mags.
 export function piptrackFrame(S: Float32Array, sampleRate: number, n: number, pitches: number[], mags: number[]): void {
