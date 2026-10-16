@@ -53,7 +53,10 @@ export type EngineCommand =
   // this page for the same reason as grading. alignStart builds (or reuses) the reference for the
   // loaded score; alignAudio carries exactly the hop-sized chunks the app's level gate passed, as
   // float32 little-endian base64; alignFinish (or the follower reaching the last note) answers
-  // with the post-take path, and the take stays here for "grade" with no audioUrl.
+  // with the post-take path, and the take stays here for "grade" with no audioUrl. alignPrepare
+  // builds the reference ahead of time (the practice screen sends it as soon as the score is
+  // drawn), so alignStart finds it ready instead of the player waiting on "Preparing the score".
+  | { type: "alignPrepare"; sampleRate: number }
   | { type: "alignStart"; id: string; sampleRate: number }
   | { type: "alignAudio"; id: string; f32: string }
   | { type: "alignSeek"; id: string; quarter: number }

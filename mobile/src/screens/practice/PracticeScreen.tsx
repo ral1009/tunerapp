@@ -105,6 +105,8 @@ export function PracticeScreen({ layout, id, fromBar, toBar }: { layout: LayoutM
     if (grader.handle(event) || engineAligner.handle(event)) return;
     if (event.type === 'error') traceEvent('engineError', event.message);
     if (event.type === 'loaded' && event.rendered) {
+      // Phones record at 48 kHz; a different rate is built when practice starts, as before.
+      if (onDevice) score.current?.send({ type: 'alignPrepare', sampleRate: 48000 });
       setNotes(event.notes);
       setQuarterIndex(event.quarterIndex);
       setMeasureCount(event.meta.measureCount);

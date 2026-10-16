@@ -219,6 +219,16 @@ async function receive(command: EngineCommand): Promise<void> {
       case "grade":
         await grade(command);
         return;
+      case "alignPrepare":
+        // After the page has painted: building the reference takes up to a few seconds.
+        setTimeout(() => {
+          try {
+            alignmentReference(command.sampleRate);
+          } catch {
+            // alignStart will report it.
+          }
+        }, 50);
+        return;
       case "alignStart":
       case "alignAudio":
       case "alignSeek":

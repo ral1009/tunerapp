@@ -198,6 +198,60 @@ function mixedStage(st: Stage, xRe: Float64Array, xIm: Float64Array, yRe: Float6
         yIm[outBase + 3 * s] = b3r * wi + b3i * wr;
         continue;
       }
+      if ((p & 1) === 1) {
+        // Odd radix: pair input q with p - q. With W^(qr) = cos t - i sin t, the pair contributes
+        // (a_q + a_(p-q)) cos t - i (a_q - a_(p-q)) sin t to output r and the same with +i to
+        // output p - r, so each root multiplies a sum and a difference once for two outputs.
+        const half = (p - 1) >> 1;
+        const x0r = xRe[inBase];
+        const x0i = xIm[inBase];
+        let y0r = x0r;
+        let y0i = x0i;
+        for (let q = 1; q <= half; q += 1) {
+          const ur = xRe[inBase + q * sm];
+          const ui = xIm[inBase + q * sm];
+          const vr = xRe[inBase + (p - q) * sm];
+          const vi = xIm[inBase + (p - q) * sm];
+          aRe[q] = ur + vr; // sums at 1..half
+          aIm[q] = ui + vi;
+          aRe[half + q] = ur - vr; // differences at half+1..2 half
+          aIm[half + q] = ui - vi;
+          y0r += aRe[q];
+          y0i += aIm[q];
+        }
+        yRe[outBase] = y0r;
+        yIm[outBase] = y0i;
+        for (let r = 1; r <= half; r += 1) {
+          let tr = x0r;
+          let ti = x0i;
+          let ur = 0;
+          let ui = 0;
+          const row = r * p;
+          for (let q = 1; q <= half; q += 1) {
+            const e = rootIndex[row + q];
+            const c = omRe[e];
+            const sn = -omIm[e]; // omIm = -sin
+            tr += aRe[q] * c;
+            ti += aIm[q] * c;
+            ur += aRe[half + q] * sn;
+            ui += aIm[half + q] * sn;
+          }
+          // b_r = T - iU, b_(p-r) = T + iU, then each twiddled.
+          const brr = tr + ui;
+          const bri = ti - ur;
+          const bsr = tr - ui;
+          const bsi = ti + ur;
+          let wr = twRe[r * m + j];
+          let wi = twIm[r * m + j];
+          yRe[outBase + r * s] = brr * wr - bri * wi;
+          yIm[outBase + r * s] = brr * wi + bri * wr;
+          wr = twRe[(p - r) * m + j];
+          wi = twIm[(p - r) * m + j];
+          yRe[outBase + (p - r) * s] = bsr * wr - bsi * wi;
+          yIm[outBase + (p - r) * s] = bsr * wi + bsi * wr;
+        }
+        continue;
+      }
       let a0r = 0;
       let a0i = 0;
       for (let q = 0; q < p; q += 1) {

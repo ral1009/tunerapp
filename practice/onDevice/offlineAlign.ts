@@ -94,16 +94,42 @@ function alignStretch(
   // librosa.sequence.dtw: D[n][m] = C[n][m] + min over steps (1,1), (0,1), (1,0) -- in that order,
   // replaced only when strictly cheaper -- with D[0][0] = C[0][0]. Filled column by column
   // (every cell depends only on cells above/left of it, so the values are the same as librosa's
-  // row-by-row fill); one byte per cell keeps the step taken for the backtrack.
+  // row-by-row fill); one byte per cell keeps the step taken for the backtrack, stored column by
+  // column (steps[m * N + n]) so the fill writes memory in order. The 12-term distance is
+  // unrolled with the additions in the same order as a loop from 0, so costs are bit-identical.
   const steps = new Uint8Array(N * M);
   let prev = new Float64Array(N);
   let cur = new Float64Array(N);
   for (let m = 0; m < M; m += 1) {
     const perfRow = frames[m] * 12;
+    const p0 = features[perfRow];
+    const p1 = features[perfRow + 1];
+    const p2 = features[perfRow + 2];
+    const p3 = features[perfRow + 3];
+    const p4 = features[perfRow + 4];
+    const p5 = features[perfRow + 5];
+    const p6 = features[perfRow + 6];
+    const p7 = features[perfRow + 7];
+    const p8 = features[perfRow + 8];
+    const p9 = features[perfRow + 9];
+    const p10 = features[perfRow + 10];
+    const p11 = features[perfRow + 11];
+    const column = m * N;
     for (let n = 0; n < N; n += 1) {
-      const refRow = (refLo + n) * 12;
-      let c = 0;
-      for (let k = 0; k < 12; k += 1) c += Math.abs(reference[refRow + k] - features[perfRow + k]);
+      const r = (refLo + n) * 12;
+      const c =
+        Math.abs(reference[r] - p0) +
+        Math.abs(reference[r + 1] - p1) +
+        Math.abs(reference[r + 2] - p2) +
+        Math.abs(reference[r + 3] - p3) +
+        Math.abs(reference[r + 4] - p4) +
+        Math.abs(reference[r + 5] - p5) +
+        Math.abs(reference[r + 6] - p6) +
+        Math.abs(reference[r + 7] - p7) +
+        Math.abs(reference[r + 8] - p8) +
+        Math.abs(reference[r + 9] - p9) +
+        Math.abs(reference[r + 10] - p10) +
+        Math.abs(reference[r + 11] - p11);
       if (n === 0 && m === 0) {
         cur[0] = c;
         steps[0] = 0;
@@ -127,7 +153,7 @@ function alignStretch(
         step = 2;
       }
       cur[n] = best;
-      steps[n * M + m] = step;
+      steps[column + n] = step;
     }
     [prev, cur] = [cur, prev];
   }
@@ -153,7 +179,7 @@ function alignStretch(
     if (i === 0) j -= 1;
     else if (j === 0) i -= 1;
     else {
-      const s = steps[i * M + j];
+      const s = steps[j * N + i];
       if (s === 0) {
         i -= 1;
         j -= 1;
