@@ -14,11 +14,15 @@ import type { ScoreNotes } from "../../score/scoreNotes";
 import { ArztFollower } from "./arztFollower";
 import { chromaFilterBank, chromaFrames, chromaFromPower, estimateTuning, piptrackFrame, powerSpectrum } from "./chroma";
 import { alignFromFeatures, type AlignmentPathPoint, type TakeSeek } from "./offlineAlign";
+import { PlaceFinder } from "./placeFinder";
 import { bandStats, bandStatsFromPower, PlayingGate } from "./playingGate";
 import { referenceAudio, refFrameQuarters } from "./referenceAudio";
 
 // The server's FRAME_RATE: hop = round(sampleRate / 30).
 export const ALIGNMENT_FRAME_RATE = 30;
+// Frames of no playing, after the last note, that end the piece (0.3 s; the app's level gate
+// keeps sending for 0.4 s after the last sound).
+const END_QUIET_FRAMES = 9;
 
 export interface AlignmentReference {
   sampleRate: number;
@@ -77,6 +81,14 @@ export class DeviceAligner {
   private offlineRms: number[] = [];
   private seeks: TakeSeek[] = [];
   private lastQuarter: number | null = null;
+  // The follower's frame after each take frame (for where a recovered stretch began).
+  private followerAt: number[] = [];
+  private readonly placeFinder: PlaceFinder | null;
+  recoveries = 0;
+  // Past the last note's onset since this take frame (null: not there), and the last take frame
+  // the gate let through.
+  private atEndSince: number | null = null;
+  private lastPlayed = -1;
   completed = false;
 
   constructor(reference: AlignmentReference, readonly options: DeviceAlignerOptions = {}) {
@@ -87,6 +99,7 @@ export class DeviceAligner {
     this.follower = new ArztFollower(reference.chroma, this.sampleRate / this.hop);
     this.frame = new Float32Array(this.nFft);
     this.S = new Float32Array((this.nFft >> 1) + 1);
+    this.placeFinder = options.recovery === false ? null : new PlaceFinder(reference.chroma, this.sampleRate / this.hop);
   }
 
   get hopLength(): number {
@@ -126,6 +139,8 @@ export class DeviceAligner {
     const target = this.frameOfQuarter(quarter);
     this.seeks.push({ sample: this.takeChunks.length * this.hop, target, liveBefore: this.follower.currentFrame });
     this.follower.seek(target);
+    this.placeFinder?.reset();
+    this.atEndSince = null;
     this.completed = false;
   }
 
@@ -179,19 +194,47 @@ export class DeviceAligner {
     let moved: number | null = null;
     for (const released of this.gate.push(index, chroma, 0, low, rms)) {
       if (this.completed) break;
+      this.lastPlayed = index;
       const used = this.follower.step(this.liveChroma, released * 12);
       if (!used) continue;
+      this.recover(released);
       const q = this.quarterOfFrame(this.follower.currentFrame);
       if (q !== this.lastQuarter) {
         this.lastQuarter = q;
         moved = q;
       }
-      // The follower stops once past the last note's onset (is_still_following). On the server
-      // the frame sitting exactly on it still reads as just before it -- its beat_map gives a
-      // hair under the float32 onset -- so it takes one more frame; strictly past matches that.
-      if (q > this.reference.lastOnsetQuarter + 1e-9) this.completed = true;
+      // Past the last note's onset (the server's is_still_following: strictly past -- on the
+      // server the frame sitting exactly on it still reads as just before it).
+      if (q > this.reference.lastOnsetQuarter + 1e-9) this.atEndSince ??= index;
+      else this.atEndSince = null;
     }
+    // The piece is over once the follower is past the last onset AND the player has stopped. The
+    // server ends at the onset itself; here a player who carries on (who restarted, so the
+    // follower reached the end on a passage that repeats) gets the follower brought back by the
+    // place finder instead of the take ending under them. The app's level gate sends 400 ms of
+    // quiet after the last sound, so stopping is always seen.
+    if (this.atEndSince !== null && index - this.lastPlayed >= END_QUIET_FRAMES) this.completed = true;
+    if (this.options.recovery === false && this.atEndSince !== null) this.completed = true;
+    this.followerAt[index] = this.follower.currentFrame;
     return moved;
+  }
+
+  // Lost? Move the follower to where the last few seconds of playing really are, and record it
+  // like a jump so the post-take pass aligns before and after it separately (a restarted phrase
+  // can't be one forward-only alignment).
+  private recover(frame: number): void {
+    const finder = this.placeFinder;
+    if (!finder) return;
+    finder.push(this.liveChroma, frame * 12, frame, this.follower.currentFrame);
+    const found = finder.check(this.follower.currentFrame);
+    if (!found) return;
+    const last = this.seeks[this.seeks.length - 1];
+    const sample = Math.max(found.startTakeFrame * this.hop, last ? last.sample + this.hop : 0);
+    const before = this.followerAt[Math.max(0, found.startTakeFrame - 1)] ?? this.follower.currentFrame;
+    this.seeks.push({ sample, target: found.startRefFrame, liveBefore: before });
+    this.follower.seek(found.target);
+    this.recoveries += 1;
+    finder.reset();
   }
 
   // Exactly the audio that was analysed (the grader's timeline).

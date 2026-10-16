@@ -244,6 +244,7 @@ interface RunResult {
   post: number;
   msPerFrame: number;
   postMs: number;
+  recoveries: number;
 }
 
 function run(c: Case, scenario: Scenario, options: DeviceAlignerOptions): RunResult | null {
@@ -343,7 +344,7 @@ function run(c: Case, scenario: Scenario, options: DeviceAlignerOptions): RunRes
     pCount += 1;
     if (Math.abs(quarter - truthAt(c.truth, t)) <= postTolQ) pGood += 1;
   }
-  return { track: counted ? good / counted : 1, recover, drift, end, post: pCount ? pGood / pCount : 0, msPerFrame, postMs };
+  return { track: counted ? good / counted : 1, recover, drift, end, post: pCount ? pGood / pCount : 0, msPerFrame, postMs, recoveries: aligner.recoveries };
 }
 
 function loadCase(name: string): Case {
@@ -374,7 +375,7 @@ export function stressSuite(names: string[], options: DeviceAlignerOptions = {},
       if (!quiet) {
         const rec = r.recover.length ? r.recover.map((x) => (Number.isFinite(x) ? x.toFixed(1) : "never")).join("/") : "-";
         console.log(
-          `  ${name.padEnd(32)} ${s.name.padEnd(18)} track ${(100 * r.track).toFixed(0).padStart(3)}%  recover ${rec.padEnd(14)} drift ${r.drift.toFixed(1).padStart(5)}  end ${r.end ? "yes" : "NO "}  post ${(100 * r.post).toFixed(0).padStart(3)}%  ${r.msPerFrame.toFixed(2)} ms/frame, post ${r.postMs.toFixed(0)} ms`,
+          `  ${name.padEnd(32)} ${s.name.padEnd(18)} track ${(100 * r.track).toFixed(0).padStart(3)}%  recover ${rec.padEnd(14)} drift ${r.drift.toFixed(1).padStart(5)}  end ${r.end ? "yes" : "NO "}  post ${(100 * r.post).toFixed(0).padStart(3)}%  moves ${r.recoveries}  ${r.msPerFrame.toFixed(2)} ms/frame, post ${r.postMs.toFixed(0)} ms`,
         );
       }
     }
@@ -393,7 +394,7 @@ function summarize(rows: ReturnType<typeof stressSuite>): void {
     const finite = recs.filter(Number.isFinite);
     const worst = finite.length ? Math.max(...finite) : 0;
     console.log(
-      `  ${n.padEnd(18)} track ${(100 * mean((r) => r.track)).toFixed(1).padStart(5)}%  ends ${sel.filter((r) => r.end).length}/${sel.length}  never recovered ${never}/${recs.length}  worst recovery ${worst.toFixed(1)}s  drift ${mean((r) => r.drift).toFixed(2)} qn  post ${(100 * mean((r) => r.post)).toFixed(1)}%`,
+      `  ${n.padEnd(18)} track ${(100 * mean((r) => r.track)).toFixed(1).padStart(5)}%  ends ${sel.filter((r) => r.end).length}/${sel.length}  never recovered ${never}/${recs.length}  worst recovery ${worst.toFixed(1)}s  drift ${mean((r) => r.drift).toFixed(2)} qn  post ${(100 * mean((r) => r.post)).toFixed(1)}%  moves ${sel.reduce((a, r) => a + r.recoveries, 0)}`,
     );
   }
   const all = rows.map((r) => r.r);

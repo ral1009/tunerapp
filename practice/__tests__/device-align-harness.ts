@@ -303,7 +303,8 @@ for (const name of cases) {
   t0 = performance.now();
   const reference = buildReference(parsed, meta.sampleRate);
   const prepMs = performance.now() - t0;
-  const aligner = new DeviceAligner(reference);
+  // The server's behaviour exactly: no place finding, the piece ends at the last onset.
+  const aligner = new DeviceAligner(reference, { recovery: false });
   const positions: number[] = [];
   let pushed = 0;
   const pieceSize = 1000;
@@ -327,6 +328,30 @@ for (const name of cases) {
   const lastLive = positions.length ? positions[positions.length - 1] : NaN;
   const serverLast = meta.refFrameQuarter[Math.min(meta.followerFrames[meta.followerFrames.length - 1] ?? 0, meta.refFrameQuarter.length - 1)];
   check("session live end = server", Math.abs(lastLive - serverLast) < 1e-9, `${lastLive.toFixed(3)} vs ${serverLast?.toFixed(3)}`);
+
+  // The app's default adds the place finder (placeFinder.ts) and ends the piece only once the
+  // player stops. On a take with nothing for it to fix it must never move the follower: the same
+  // live positions as the server's, as far as those go.
+  const withRecovery = new DeviceAligner(reference);
+  const recoveredPositions: number[] = [];
+  pushed = 0;
+  for (let chunk = 0; chunk <= chunks; chunk += 1) {
+    const upTo = Math.min(take.length, chunk * meta.hop);
+    while (pushed < upTo) {
+      const end = Math.min(upTo, pushed + pieceSize);
+      const q = withRecovery.push(take.subarray(pushed, end));
+      if (q !== null) recoveredPositions.push(q);
+      pushed = end;
+    }
+    for (const seek of meta.seeks) if (seek.chunk === chunk) withRecovery.seek(seek.quarter);
+  }
+  const prefixSame = positions.every((q, i) => recoveredPositions[i] === q);
+  // Only where the server's live follower is known to be right all the way: not after a jump the
+  // player didn't follow (the jump case keeps playing on from where it was, so moving it back is
+  // the right thing), and not on the held-out takes (judged by npm run alignStressTest -- --all).
+  const detail = `${withRecovery.recoveries} moves, ${recoveredPositions.length} positions vs ${positions.length}`;
+  if (meta.seeks.length === 0 && !["bwv1006-menuet1", "user-take-b"].includes(meta.name)) check("default session: no place-finder moves, same positions", withRecovery.recoveries === 0 && prefixSame, detail);
+  else console.log(`       default session (not checked here): ${detail}`);
 
   // Stage 5: what the player sees -- every note graded from our path vs from the server's.
   const inputs = gradingInputs(meta, meta.sampleRate);
